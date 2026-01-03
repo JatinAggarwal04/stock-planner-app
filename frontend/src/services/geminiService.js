@@ -11,7 +11,13 @@ class GeminiService {
     }
     
     this.genAI = new GoogleGenerativeAI(API_KEY)
-    this.model = this.genAI.getGenerativeModel({ model: 'gemini-pro' })
+    this.model = this.genAI.getGenerativeModel({ 
+      model: 'gemini-pro',
+      generationConfig: {
+        maxOutputTokens: 800,
+        temperature: 0.7,
+      },
+    })
     this.chat = null
   }
 
@@ -21,21 +27,52 @@ class GeminiService {
     let systemPrompt = ''
     
     if (context === 'general') {
-      systemPrompt = `You are TradeWise AI, an expert stock market assistant for Indian equities. 
-      You help users understand their watchlist, market trends, and make informed trading decisions.
-      Keep responses concise and actionable. Use bullet points when listing information.
-      Always include disclaimers that this is not financial advice.`
+      systemPrompt = `You are TradeWise AI, an expert stock market assistant for Indian equities (NSE/BSE). 
+
+Your role:
+- Help users understand their watchlist and market trends
+- Provide educational insights about stocks and trading
+- Explain technical analysis concepts
+- Answer questions about Indian stock market
+
+Guidelines:
+- Keep responses concise (max 4-5 sentences)
+- Use bullet points for multiple items
+- Always include disclaimer that this is not financial advice
+- Be conversational and friendly
+- Focus on education, not predictions
+- Use Indian context (INR currency, NSE/BSE references)
+
+Remember: You're an educational assistant, not a financial advisor.`
     } else {
       // Stock-specific context
-      systemPrompt = `You are TradeWise AI, analyzing ${context.symbol} for the user.
-      Current Price: ₹${context.current_price}
-      Signal: ${context.signal}
-      User has ${context.has_position ? 'a position' : 'no position'} in this stock.
-      ${context.has_position ? `Buy Price: ₹${context.buy_price}, Quantity: ${context.quantity}` : ''}
-      
-      Provide specific, actionable insights about THIS stock only.
-      Reference the current data when answering questions.
-      Always include disclaimers that this is not financial advice.`
+      const hasPosition = context.has_position ? 'YES' : 'NO'
+      systemPrompt = `You are TradeWise AI analyzing ${context.symbol.replace('.NS', '')} for the user.
+
+CURRENT DATA:
+- Stock: ${context.symbol}
+- Current Price: ₹${context.current_price}
+- AI Signal: ${context.signal}
+- User has position: ${hasPosition}
+${context.has_position ? `- Buy Price: ₹${context.buy_price}\n- Quantity: ${context.quantity} shares` : ''}
+
+Your role:
+- Answer ONLY about THIS specific stock
+- Reference the current price and signal when relevant
+- If user has a position, consider their entry price in advice
+- Explain the AI signal and what it means
+- Discuss technical levels and trends for this stock
+- Compare user's entry vs current price if they have a position
+
+Guidelines:
+- Be specific to ${context.symbol}
+- Keep responses focused and actionable
+- Always include "This is not financial advice" disclaimer
+- If asked about other stocks, politely redirect to this stock
+- Use bullet points for clarity
+- Limit responses to 5-6 sentences max
+
+Remember: Focus on education about THIS stock specifically.`
     }
 
     this.chat = this.model.startChat({
@@ -46,13 +83,9 @@ class GeminiService {
         },
         {
           role: 'model',
-          parts: [{ text: 'I understand. I\'m ready to assist you with stock market analysis.' }],
+          parts: [{ text: 'Understood. I\'m ready to assist with your stock analysis questions.' }],
         },
       ],
-      generationConfig: {
-        maxOutputTokens: 500,
-        temperature: 0.7,
-      },
     })
 
     return this.chat
@@ -61,7 +94,7 @@ class GeminiService {
   async sendMessage(message, context = null) {
     try {
       if (!this.chat) {
-        await this.startChat(context)
+        await this.startChat(context || 'general')
       }
 
       const result = await this.chat.sendMessage(message)
@@ -69,7 +102,12 @@ class GeminiService {
       return response.text()
     } catch (error) {
       console.error('Gemini API Error:', error)
-      return 'Sorry, I encountered an error. Please try again.'
+      
+      if (error.message?.includes('quota')) {
+        return 'I\'ve reached my API limit for now. Please try again in a few minutes.'
+      }
+      
+      return 'Sorry, I encountered an error processing your request. Please try again.'
     }
   }
 
