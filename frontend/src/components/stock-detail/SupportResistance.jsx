@@ -29,13 +29,13 @@ export default function SupportResistance({ data }) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Resistance */}
-        <div className="p-4 bg-danger-50 dark:bg-danger-950/20 rounded-xl border-2 border-danger-200 dark:border-danger-900">
+        <div className="p-4 bg-danger-50 dark:bg-danger-500/10 rounded-xl border-2 border-danger-200 dark:border-danger-400/30">
           <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 bg-danger-100 dark:bg-danger-900/30 rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-danger-100 dark:bg-danger-500/20 rounded-lg flex items-center justify-center">
               <TrendingUp className="w-5 h-5 text-danger-600 dark:text-danger-400" />
             </div>
             <div>
-              <div className="text-sm font-medium text-danger-900 dark:text-danger-200">
+              <div className="text-sm font-medium text-danger-600 dark:text-danger-400">
                 Nearest Resistance
               </div>
               <div className="text-2xl font-bold text-slate-900 dark:text-white">
@@ -49,8 +49,8 @@ export default function SupportResistance({ data }) {
           {hasResistance && (
             <>
               <div className="flex items-center justify-between text-sm mb-3">
-                <span className="text-slate-700 dark:text-slate-200">Distance</span>
-                <span className="font-semibold text-danger-700 dark:text-danger-300">
+                <span className="text-slate-700 dark:text-slate-300">Distance</span>
+                <span className="font-semibold text-danger-700 dark:text-white">
                   +{data.resistance_distance_pct}%
                 </span>
               </div>
@@ -97,13 +97,13 @@ export default function SupportResistance({ data }) {
         </div>
 
         {/* Support */}
-        <div className="p-4 bg-success-50 dark:bg-success-950/20 rounded-xl border-2 border-success-200 dark:border-success-900">
+        <div className="p-4 bg-success-50 dark:bg-success-500/10 rounded-xl border-2 border-success-200 dark:border-success-900">
           <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 bg-success-100 dark:bg-success-900/30 rounded-lg flex items-center justify-center">
-              <TrendingDown className="w-5 h-5 text-success-600 dark:text-success-400" />
+            <div className="w-8 h-8 bg-success-100 dark:bg-success-500/20 rounded-lg flex items-center justify-center">
+              <TrendingDown className="w-5 h-5 text-success-600 dark:text-success-400/30" />
             </div>
             <div>
-              <div className="text-sm font-medium text-success-900 dark:text-success-200">
+              <div className="text-sm font-medium text-success-600 dark:text-success-400">
                 Nearest Support
               </div>
               <div className="text-2xl font-bold text-slate-900 dark:text-white">

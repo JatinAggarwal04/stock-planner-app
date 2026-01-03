@@ -465,9 +465,9 @@ export default function TradePanel({ data, symbol }) {
         </h4>
 
         <div className="space-y-3">
-          <div className="flex items-center gap-3 p-3 bg-primary-50 dark:bg-primary-950/20 rounded-lg border border-primary-200 dark:border-primary-900">
-            <div className="w-8 h-8 bg-primary-100 dark:bg-primary-900/30 rounded-lg flex items-center justify-center">
-              <TrendingUp className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+          <div className="flex items-center gap-3 p-3 bg-primary-50 dark:bg-primary-500/10 rounded-lg border border-primary-200 dark:border-primary-400/30">
+            <div className="w-8 h-8 bg-primary-100 dark:bg-primary-500/20 rounded-lg flex items-center justify-center">
+              <TrendingUp className="w-4 h-4 text-primary-700 dark:text-primary-400" />
             </div>
             <div className="flex-1">
               <div className="text-xs text-slate-700 dark:text-slate-200">Entry</div>
@@ -477,8 +477,8 @@ export default function TradePanel({ data, symbol }) {
             </div>
           </div>
 
-          <div className="flex items-center gap-3 p-3 bg-danger-50 dark:bg-danger-950/20 rounded-lg border border-danger-200 dark:border-danger-900">
-            <div className="w-8 h-8 bg-danger-100 dark:bg-danger-900/30 rounded-lg flex items-center justify-center">
+          <div className="flex items-center gap-3 p-3 bg-danger-50 dark:bg-danger-500/10 rounded-lg border border-danger-200 dark:border-danger-400/30">
+            <div className="w-8 h-8 bg-danger-100 dark:bg-danger-500/20 rounded-lg flex items-center justify-center">
               <Shield className="w-4 h-4 text-danger-600 dark:text-danger-400" />
             </div>
             <div className="flex-1">
@@ -489,8 +489,8 @@ export default function TradePanel({ data, symbol }) {
             </div>
           </div>
 
-          <div className="flex items-center gap-3 p-3 bg-success-50 dark:bg-success-950/20 rounded-lg border border-success-200 dark:border-success-900">
-            <div className="w-8 h-8 bg-success-100 dark:bg-success-900/30 rounded-lg flex items-center justify-center">
+          <div className="flex items-center gap-3 p-3 bg-success-50 dark:bg-success-500/10 rounded-lg border border-success-200 dark:border-success-400/30">
+            <div className="w-8 h-8 bg-success-100 dark:bg-success-500/20 rounded-lg flex items-center justify-center">
               <Target className="w-4 h-4 text-success-600 dark:text-success-400" />
             </div>
             <div className="flex-1">
