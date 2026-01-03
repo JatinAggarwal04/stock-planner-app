@@ -1,3 +1,6 @@
+// ============================================
+// FILE: src/components/stock-detail/ChartView.jsx
+// ============================================
 import { useState, useEffect, useRef } from 'react'
 import { createChart, ColorType } from 'lightweight-charts'
 import { useTheme } from '../../context/ThemeContext'
@@ -5,7 +8,6 @@ import { CHART_TYPES, TIME_RANGES } from '../../utils/constants'
 import Card from '../ui/Card'
 import Button from '../ui/Button'
 import { LineChart, CandlestickChart, AreaChart } from 'lucide-react'
-import yfinance from 'yfinance'
 
 export default function ChartView({ symbol, currentPrice }) {
   const [chartType, setChartType] = useState(CHART_TYPES.CANDLESTICK)
@@ -23,8 +25,7 @@ export default function ChartView({ symbol, currentPrice }) {
 
   const fetchHistoricalData = async () => {
     try {
-      // In production, call your backend API
-      // For now, simulating data
+      // Generate mock data for demonstration
       const days = TIME_RANGES[timeRange] || 30
       const data = generateMockData(days, currentPrice)
       setChartData(data)

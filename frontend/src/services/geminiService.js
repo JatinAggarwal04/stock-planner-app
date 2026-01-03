@@ -12,7 +12,7 @@ class GeminiService {
     
     this.genAI = new GoogleGenerativeAI(API_KEY)
     this.model = this.genAI.getGenerativeModel({ 
-      model: 'gemini-pro',
+      model: 'gemini-2.5-flash',
       generationConfig: {
         maxOutputTokens: 800,
         temperature: 0.7,

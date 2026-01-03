@@ -1,13 +1,24 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
+import { useWatchlistStore } from './context/WatchlistContext'
+import { useEffect } from 'react'
 import Login from './pages/Login'
 import Signup from './pages/Signup'
 import Dashboard from './pages/Dashboard'
 import StockDetail from './pages/StockDetail'
 import Navbar from './components/layout/Navbar'
-
+import TestAPI from './pages/TestAPI'
+import BackendStatus from './components/BackendStatus'
 function App() {
   const { user, loading } = useAuth()
+  const { initialize } = useWatchlistStore()
+
+  // Initialize watchlist when user logs in
+  useEffect(() => {
+    if (user) {
+      initialize(user.id)
+    }
+  }, [user])
 
   if (loading) {
     return (
@@ -20,7 +31,7 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-dark-bg transition-colors duration-200">
       {user && <Navbar />}
-      
+      <BackendStatus /> 
       <Routes>
         <Route 
           path="/login" 
@@ -30,6 +41,8 @@ function App() {
           path="/signup" 
           element={user ? <Navigate to="/dashboard" /> : <Signup />} 
         />
+        <Route path="/test-api" element={<TestAPI />} />
+
         <Route 
           path="/dashboard" 
           element={user ? <Dashboard /> : <Navigate to="/login" />} 

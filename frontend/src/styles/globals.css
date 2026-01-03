@@ -1,8 +1,9 @@
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
   --toast-bg: #ffffff;
@@ -136,4 +137,3 @@ body {
 .dark .bg-price-down {
   background-color: rgba(239, 68, 68, 0.1);
 }
-

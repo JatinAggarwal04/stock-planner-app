@@ -126,26 +126,26 @@ export default function ChatInterface({ onClose, context = 'general' }) {
           className="relative w-full sm:max-w-2xl h-[100vh] sm:h-[80vh] bg-white dark:bg-dark-surface sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden"
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-dark-border bg-gradient-to-r from-primary-50 to-primary-100 dark:from-primary-900/20 dark:to-primary-800/20">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-dark-border bg-gradient-to-r from-primary-50 to-primary-100 dark:from-dark-surface dark:to-dark-card">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-primary-700 rounded-xl flex items-center justify-center">
+              <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-primary-700 rounded-xl flex items-center justify-center shadow-lg">
                 <Sparkles className="w-5 h-5 text-white" />
               </div>
               <div>
                 <h3 className="font-bold text-slate-900 dark:text-white">
                   TradeWise AI
                 </h3>
-                <p className="text-xs text-slate-600 dark:text-slate-400">
-                  Powered by Gemini
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  Powered by Gemini 2.0 Flash
                 </p>
               </div>
             </div>
 
             <button
               onClick={onClose}
-              className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors"
+              className="p-2 hover:bg-slate-200 dark:hover:bg-dark-hover rounded-lg transition-colors"
             >
-              <X className="w-5 h-5" />
+              <X className="w-5 h-5 text-slate-600 dark:text-slate-300" />
             </button>
           </div>
 

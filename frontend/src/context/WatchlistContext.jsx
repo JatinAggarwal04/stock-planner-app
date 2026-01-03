@@ -1,52 +1,76 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { watchlistService } from '../services/watchlistService'
 
-export const useWatchlistStore = create(
-  persist(
-    (set, get) => ({
-      watchlist: [],
-      trades: {},
+export const useWatchlistStore = create((set, get) => ({
+  watchlist: [],
+  trades: {},
+  initialized: false,
+  userId: null,
 
-      addToWatchlist: (symbol) => {
-        const current = get().watchlist
-        if (!current.includes(symbol)) {
-          set({ watchlist: [...current, symbol] })
-        }
-      },
+  // Initialize from Supabase
+  initialize: async (userId) => {
+    if (!userId) return
+    
+    set({ userId })
+    const watchlist = await watchlistService.getWatchlist(userId)
+    const trades = await watchlistService.getTrades(userId)
+    set({ watchlist, trades, initialized: true })
+  },
 
-      removeFromWatchlist: (symbol) => {
-        set({ watchlist: get().watchlist.filter((s) => s !== symbol) })
-      },
+  addToWatchlist: async (symbol) => {
+    const { userId, watchlist } = get()
+    if (!userId) return
 
-      isInWatchlist: (symbol) => {
-        return get().watchlist.includes(symbol)
-      },
-
-      recordTrade: (symbol, tradeData) => {
-        set({
-          trades: {
-            ...get().trades,
-            [symbol]: tradeData,
-          },
-        })
-      },
-
-      getTrade: (symbol) => {
-        return get().trades[symbol] || null
-      },
-
-      removeTrade: (symbol) => {
-        const trades = { ...get().trades }
-        delete trades[symbol]
-        set({ trades })
-      },
-
-      clearWatchlist: () => {
-        set({ watchlist: [], trades: {} })
-      },
-    }),
-    {
-      name: 'tradewise-storage',
+    if (!watchlist.includes(symbol)) {
+      await watchlistService.addToWatchlist(userId, symbol)
+      set({ watchlist: [...watchlist, symbol] })
     }
-  )
-)
+  },
+
+  removeFromWatchlist: async (symbol) => {
+    const { userId } = get()
+    if (!userId) return
+
+    await watchlistService.removeFromWatchlist(userId, symbol)
+    set({ watchlist: get().watchlist.filter((s) => s !== symbol) })
+  },
+
+  isInWatchlist: (symbol) => {
+    return get().watchlist.includes(symbol)
+  },
+
+  recordTrade: async (symbol, tradeData) => {
+    const { userId } = get()
+    if (!userId) return
+
+    await watchlistService.recordTrade(userId, symbol, tradeData)
+    set({
+      trades: {
+        ...get().trades,
+        [symbol]: {
+          ...tradeData,
+          buyDate: tradeData.buyDate || new Date().toISOString(),
+          type: tradeData.type || 'BUY',
+        },
+      },
+    })
+  },
+
+  getTrade: (symbol) => {
+    return get().trades[symbol] || null
+  },
+
+  removeTrade: async (symbol) => {
+    const { userId } = get()
+    if (!userId) return
+
+    await watchlistService.removeTrade(userId, symbol)
+    const trades = { ...get().trades }
+    delete trades[symbol]
+    set({ trades })
+  },
+
+  clearWatchlist: () => {
+    set({ watchlist: [], trades: {}, initialized: false, userId: null })
+  },
+}))
