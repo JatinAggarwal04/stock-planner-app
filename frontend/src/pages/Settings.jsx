@@ -1,3 +1,4 @@
+//frontend/src/pages/Settings.jsx
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { User, Bell, Shield, Trash2 } from 'lucide-react'

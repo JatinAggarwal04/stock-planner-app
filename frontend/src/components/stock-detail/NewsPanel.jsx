@@ -1,3 +1,4 @@
+//frontend/src/components/stock-detail/NewsPanel.jsx
 import { ExternalLink, Newspaper } from 'lucide-react'
 import { formatters } from '../../utils/formatters'
 import Card from '../ui/Card'

@@ -1,3 +1,4 @@
+//frontend/src/components/ui/Badge.jsx
 export default function Badge({ children, variant = 'default', className = '' }) {
   const variants = {
     default: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',

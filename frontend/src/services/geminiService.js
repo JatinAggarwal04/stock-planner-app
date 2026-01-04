@@ -1,3 +1,4 @@
+//frontend/src/services/geminiService.js
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY

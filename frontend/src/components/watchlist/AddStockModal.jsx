@@ -1,3 +1,4 @@
+//frontend/src/components/watchlist/AddStockModal.jsx
 import { useState } from 'react'
 import { Search, TrendingUp } from 'lucide-react'
 import Modal from '../ui/Modal'

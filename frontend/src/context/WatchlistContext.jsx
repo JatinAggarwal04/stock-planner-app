@@ -1,3 +1,4 @@
+//frontend/src/context/WatchlistContext.jsx
 import { create } from 'zustand'
 import { watchlistService } from '../services/watchlistService'
 

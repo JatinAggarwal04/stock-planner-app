@@ -1,4 +1,4 @@
-
+//frontend/src/components/stock-detail/TradePanel.jsx
 import { useState } from 'react'
 import { DollarSign, Hash, TrendingUp, Target, Shield, Calendar, TrendingDown, Percent } from 'lucide-react'
 import { formatters } from '../../utils/formatters'

@@ -1,3 +1,4 @@
+//frontend/src/components/chatbot/ChatInterface.jsx
 import { useState, useRef, useEffect } from 'react'
 import { X, Send, Loader2, Sparkles } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'

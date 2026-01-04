@@ -1,3 +1,4 @@
+//frontend/src/components/ui/Card.jsx
 import { motion } from 'framer-motion'
 
 export default function Card({ children, className = '', hover = false, ...props }) {

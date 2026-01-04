@@ -1,3 +1,4 @@
+//frontend/src/pages/Dashboard.jsx
 import { useState } from 'react'
 import { Plus, MessageCircle } from 'lucide-react'
 import WatchlistGrid from '../components/watchlist/WatchlistGrid'

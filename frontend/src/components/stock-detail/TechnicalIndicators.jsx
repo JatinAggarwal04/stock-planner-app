@@ -1,3 +1,4 @@
+//frontend/src/components/stock-detail/TechnicalIndicators.jsx
 import { Activity, TrendingUp, BarChart3 } from 'lucide-react'
 import Card from '../ui/Card'
 import Badge from '../ui/Badge'

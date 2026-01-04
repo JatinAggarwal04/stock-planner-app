@@ -1,3 +1,4 @@
+//frontend/src/components/watchlist/WatchlistGrid.jsx
 import { useQuery } from '@tanstack/react-query'
 import { useWatchlistStore } from '../../context/WatchlistContext'
 import { stockService } from '../../services/stockService'

@@ -1,3 +1,4 @@
+//frontend/src/components/stock-detail/StockHeader.jsx
 import { TrendingUp, TrendingDown, Star, Plus } from 'lucide-react'
 import { useWatchlistStore } from '../../context/WatchlistContext'
 import { formatters } from '../../utils/formatters'

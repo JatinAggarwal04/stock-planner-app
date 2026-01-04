@@ -1,3 +1,4 @@
+//frontend/src/pages/TestAPI.jsx
 import { useState } from 'react'
 import { stockService } from '../services/stockService'
 import Button from '../components/ui/Button'

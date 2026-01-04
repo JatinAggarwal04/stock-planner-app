@@ -1,3 +1,4 @@
+//frontend/src/utils/formatters.js
 export const formatters = {
   // Format Indian currency
   currency: (value) => {

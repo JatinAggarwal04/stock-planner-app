@@ -1,3 +1,4 @@
+//frontend/src/context/AuthContext.jsx
 import { createContext, useContext, useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
 import toast from 'react-hot-toast'

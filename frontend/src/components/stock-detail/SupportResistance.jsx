@@ -1,3 +1,4 @@
+//frontend/src/components/stock-detail/SupportResistance.jsx
 import { TrendingUp, TrendingDown, Target } from 'lucide-react'
 import { formatters } from '../../utils/formatters'
 import Card from '../ui/Card'

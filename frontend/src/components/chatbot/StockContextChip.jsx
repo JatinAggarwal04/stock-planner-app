@@ -1,3 +1,4 @@
+//frontend/src/components/chatbot/StockContextChip.jsx
 import { X, TrendingUp } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 

@@ -1,3 +1,4 @@
+//frontend/src/services/watchlistService.js
 import { supabase } from './supabase'
 
 export const watchlistService = {

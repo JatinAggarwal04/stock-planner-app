@@ -1,3 +1,4 @@
+//frontend/src/utils/constants.js
 export const SIGNAL_COLORS = {
   STRONG_BUY: '#10b981',
   BUY: '#34d399',
@@ -18,7 +19,6 @@ export const POPULAR_STOCKS = [
   'INFY.NS',
   'HDFCBANK.NS',
   'ICICIBANK.NS',
-  'TATAMOTORS.NS',
   'WIPRO.NS',
   'ITC.NS',
   'SBIN.NS',

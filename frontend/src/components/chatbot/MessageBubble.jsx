@@ -1,3 +1,4 @@
+//frontend/src/components/chatbot/MessageBubble.jsx
 import { motion } from 'framer-motion'
 import { User, Bot } from 'lucide-react'
 import { formatters } from '../../utils/formatters'

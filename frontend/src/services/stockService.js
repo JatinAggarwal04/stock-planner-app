@@ -1,3 +1,4 @@
+//frontend/src/services/stockService.js
 import api from './api'
 
 export const stockService = {

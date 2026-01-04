@@ -1,3 +1,4 @@
+//frontend/src/components/watchlist/StockCard.jsx
 import { useNavigate } from 'react-router-dom'
 import { TrendingUp, TrendingDown, X, Volume2 } from 'lucide-react'
 import { useWatchlistStore } from '../../context/WatchlistContext'
