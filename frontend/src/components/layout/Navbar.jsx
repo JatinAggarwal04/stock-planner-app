@@ -5,7 +5,7 @@ import { useAuth } from '../../context/AuthContext'
 import ThemeToggle from './ThemeToggle'
 import { motion } from 'framer-motion'
 import { useState } from 'react'
-//.
+//..
 export default function Navbar() {
   const { user, signOut } = useAuth()
   const [showDropdown, setShowDropdown] = useState(false)
