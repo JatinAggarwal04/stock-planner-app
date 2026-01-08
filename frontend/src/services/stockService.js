@@ -50,6 +50,19 @@ export const stockService = {
     }
   },
 
+  // Search stocks
+  async searchStocks(query) {
+    try {
+      const response = await api.get('/search', {
+        params: { query }
+      })
+      return response.data
+    } catch (error) {
+      console.error('searchStocks error:', error)
+      return []
+    }
+  },
+
   // Batch quotes
   async getBatchQuotes(symbols) {
     const promises = symbols.map((symbol) => 

@@ -728,6 +728,52 @@ def personalized_analysis(
         print(f"Personalized Analysis Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/search")
+def search_stocks(query: str):
+    """Search for stocks using Yahoo Finance API"""
+    try:
+        url = "https://query2.finance.yahoo.com/v1/finance/search"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(
+            url, 
+            params={
+                'q': query,
+                'quotesCount': 20, 
+                'newsCount': 0,
+                'enableFuzzyQuery': False,
+                'quotesQueryId': 'tss_match_phrase_query'
+            },
+            headers=headers
+        )
+        
+        data = response.json()
+        
+        if 'quotes' not in data:
+            return []
+            
+        results = []
+        for quote in data['quotes']:
+            symbol = quote.get('symbol', '')
+            
+            # Filter for Indian stocks (NSE/BSE)
+            if symbol.endswith('.NS') or symbol.endswith('.BO'):
+                results.append({
+                    "symbol": symbol,
+                    "name": quote.get('longname') or quote.get('shortname') or symbol,
+                    "exchange": "NSE" if symbol.endswith('.NS') else "BSE",
+                    "type": quote.get('quoteType', 'EQUITY')
+                })
+                
+        return results[:10]  # Return top 10 relevant results
+        
+    except Exception as e:
+        print(f"Search API Error: {e}")
+        # Return empty list instead of error for smooth UI
+        return []
+
 @app.get("/quote/{symbol}")
 def quick_quote(symbol: str):
     """Quick price quote for watchlist"""
