@@ -86,55 +86,66 @@ export default function TradePanel({ data, symbol, onAskAI }) {
 
       {/* 1. Current Position Card */}
       {portfolioItem && Math.abs(portfolioItem.quantity) > 0 ? (
-        <Card className="p-6">
-          <div className="flex justify-between items-start mb-6">
-            <div>
-              <div className="text-sm font-medium text-slate-500 dark:text-slate-400 mb-1">Your Position</div>
-              <div className={`text-2xl font-bold ${pl.isLong ? 'text-success-500' : 'text-danger-500'}`}>
-                {pl.isLong ? 'LONG' : 'SHORT'} {Math.abs(portfolioItem.quantity)} Qty
+        <Card className="p-0 overflow-hidden border border-slate-200 dark:border-slate-800 shadow-sm">
+          {/* Top Section: Position Stats */}
+          <div className="p-5 grid grid-cols-2 gap-6 bg-white dark:bg-slate-900">
+            {/* Left: Position Info */}
+            <div className="space-y-1">
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 flex items-center gap-2">
+                Position
+                <Badge variant={pl.isLong ? 'success' : 'danger'} size="sm" className="px-1.5 py-0.5 text-[10px] h-5">
+                  {pl.isLong ? 'LONG' : 'SHORT'}
+                </Badge>
               </div>
-              <div className="text-sm text-slate-500 dark:text-slate-400">
-                Avg. Price: {formatters.currency(portfolioItem.averagePrice)}
+              <div className="text-2xl font-bold text-slate-900 dark:text-white items-baseline flex gap-1">
+                {Math.abs(portfolioItem.quantity)} <span className="text-sm font-medium text-slate-400">Qty</span>
+              </div>
+              <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                Avg: {formatters.currency(portfolioItem.averagePrice)}
               </div>
             </div>
-            <div className="text-right">
-              <div className="text-sm font-medium text-slate-500 dark:text-slate-400">Profit/Loss</div>
-              <div className={`text-xl font-bold ${pl.profitLoss >= 0 ? 'text-success-500' : 'text-danger-500'}`}>
-                {pl.profitLoss >= 0 ? '+' : ''}{formatters.currency(pl.profitLoss)}
-                <span className="text-sm ml-1">({pl.profitLossPct.toFixed(2)}%)</span>
-              </div>
 
-              {/* AI Insight Button */}
-              <div className="mt-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex items-center gap-2 border-primary-200 text-primary-600 hover:bg-primary-50 dark:border-primary-900/50 dark:text-primary-400 dark:hover:bg-primary-900/20 w-full justify-center"
-                  onClick={() => onAskAI && onAskAI()}
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span className="hidden sm:inline">Get AI Insight</span>
-                  <span className="sm:hidden">Ask AI</span>
-                </Button>
+            {/* Right: P&L Info */}
+            <div className="text-right space-y-1">
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                Net P&L
+              </div>
+              <div className={`text-2xl font-bold flex items-center justify-end gap-2 ${pl.profitLoss >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                {pl.profitLoss >= 0 ? '+' : ''}{formatters.currency(pl.profitLoss)}
+              </div>
+              <div className={`text-xs font-bold inline-flex items-center px-1.5 py-0.5 rounded ${pl.profitLoss >= 0 ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400'}`}>
+                {pl.profitLoss >= 0 ? <TrendingUp className="w-3 h-3 mr-1" /> : <TrendingDown className="w-3 h-3 mr-1" />}
+                {pl.profitLossPct.toFixed(2)}%
               </div>
             </div>
           </div>
 
-          {/* Action Buttons */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* Bottom Section: Actions */}
+          <div className="bg-slate-50 dark:bg-slate-800/50 p-4 border-t border-slate-100 dark:border-slate-800 flex flex-col gap-3">
+            <div className="flex gap-3">
+              <Button
+                variant="success"
+                className="flex-1 shadow-sm border border-emerald-600/20 active:scale-[0.98] transition-all"
+                onClick={() => openOrderPad('BUY')}
+              >
+                <Plus className="w-4 h-4 mr-2" /> Buy More
+              </Button>
+              <Button
+                variant="danger"
+                className="flex-1 shadow-sm border border-rose-600/20 active:scale-[0.98] transition-all"
+                onClick={() => openOrderPad('SELL')}
+              >
+                <TrendingDown className="w-4 h-4 mr-2" /> Sell / Reduce
+              </Button>
+            </div>
+
             <Button
-              className="w-full"
-              variant="success"
-              onClick={() => openOrderPad('BUY')}
+              variant="outline"
+              size="sm"
+              className="w-full border-dashed border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:border-indigo-300 transition-colors"
+              onClick={() => onAskAI && onAskAI()}
             >
-              Add / Buy
-            </Button>
-            <Button
-              className="w-full"
-              variant="danger"
-              onClick={() => openOrderPad('SELL')}
-            >
-              Reduce / Sell
+              <Sparkles className="w-3.5 h-3.5 mr-2" /> Analyse Position Risk
             </Button>
           </div>
         </Card>

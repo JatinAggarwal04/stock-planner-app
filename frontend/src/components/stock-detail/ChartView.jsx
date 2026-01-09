@@ -16,6 +16,7 @@ export default function ChartView({ symbol, timeRange, onTimeRangeChange, onPric
   const [chartType, setChartType] = useState(CHART_TYPES.AREA)
   const [chartData, setChartData] = useState([])
   const [markers, setMarkers] = useState([])
+  const [prevClose, setPrevClose] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
 
   const chartContainerRef = useRef(null)
@@ -30,6 +31,7 @@ export default function ChartView({ symbol, timeRange, onTimeRangeChange, onPric
       try {
         const response = await stockService.getHistory(symbol, timeRange)
         setChartData(response.data)
+        setPrevClose(response.meta.previous_close || null)
 
         // Process Markers (Dividends/Splits)
         const eventMarkers = response.events.map(event => ({
@@ -168,18 +170,11 @@ export default function ChartView({ symbol, timeRange, onTimeRangeChange, onPric
 
     // Add Previous Close Line (The "Last Closing" Line)
     if (chartData.length > 0) {
-      // Try to find previous close from meta or first open
-      // In a real app, this should come specifically from the API metadata
-      // For now, let's use the first point's open/close as proxy if meta isn't available in prop
-      // But we have chartData only here. 
-      // NOTE: calculatePL logic implies referencePrice was used. 
-      // We will assume the FIRST data point's 'open' is a proxy for prev close in intraday view 
-      // OR better, pass it as a prop?
-      // Let's use the first data point as the reference line for now.
-      const startPrice = chartData[0].open || chartData[0].value || chartData[0].close;
+      // Use meta value if available, otherwise fallback to first open
+      const referencePrice = prevClose || chartData[0].open || chartData[0].value || chartData[0].close;
 
       series.createPriceLine({
-        price: startPrice,
+        price: referencePrice,
         color: '#fbbf24', // Amber/Yellow for reference
         lineWidth: 1,
         lineStyle: 2, // Dashed
