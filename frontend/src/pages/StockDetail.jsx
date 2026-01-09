@@ -1,5 +1,5 @@
 //frontend/src/pages/StockDetail.jsx
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, MessageCircle } from 'lucide-react'
@@ -18,9 +18,13 @@ export default function StockDetail() {
   const { symbol } = useParams()
   const navigate = useNavigate()
   const [showChat, setShowChat] = useState(false)
-  const { getTrade } = useWatchlistStore()
 
+  const { getTrade } = useWatchlistStore()
   const trade = getTrade(symbol)
+
+  // State for chart interaction
+  const [timeRange, setTimeRange] = useState('1D')
+  const [priceChange, setPriceChange] = useState(null)
 
   // Fetch full stock analysis
   const { data: analysis, isLoading, error } = useQuery({
@@ -37,6 +41,47 @@ export default function StockDetail() {
     },
     refetchInterval: 30000, // Refresh every 30 seconds
   })
+
+  // Callback to update price change from ChartView
+  const handlePriceChange = useCallback((changeData) => {
+    setPriceChange(changeData)
+  }, [])
+
+  // Chat context state
+  const [chatContext, setChatContext] = useState(null)
+
+  const handleAskAI = () => {
+    if (!analysis) return
+
+    // Prepare robust context for the AI
+    const context = {
+      type: 'stock',
+      symbol: analysis.symbol,
+      current_price: analysis.current_price,
+      signal: analysis.recommendation?.signal || 'Neutral',
+      has_position: !!trade,
+      buy_price: trade?.averagePrice || 0,
+      quantity: trade?.quantity || 0,
+      // Pass the trading plan calculated by the backend (Handle both base and personalized Structure)
+      trading_plan: analysis.personalized_recommendation?.trading_plan || analysis.trading_plan || null,
+      personalized_recommendation: analysis.personalized_recommendation || null,
+      trade_setup: analysis.trade_setup || null // Pass base trade setup too
+    }
+
+    setChatContext(context)
+    setShowChat(true)
+  }
+
+  // Open generic chat
+  const handleOpenChat = () => {
+    setChatContext({
+      type: 'stock',
+      symbol: symbol,
+      current_price: analysis?.current_price || 0,
+      signal: analysis?.recommendation?.signal || 'Neutral'
+    })
+    setShowChat(true)
+  }
 
   if (isLoading) {
     return (
@@ -76,7 +121,7 @@ export default function StockDetail() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-dark-bg">
+    <div className="min-h-screen bg-slate-50 dark:bg-dark-bg overflow-x-hidden">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Back Button */}
         <Button
@@ -89,27 +134,41 @@ export default function StockDetail() {
         </Button>
 
         {/* Stock Header */}
-        <StockHeader data={analysis} />
+        <StockHeader
+          data={analysis}
+          priceChange={priceChange}
+          timeRange={timeRange}
+        />
 
         {/* Main Content Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
           {/* Left Column - Chart & Technical */}
           <div className="lg:col-span-2 space-y-6">
-            <ChartView symbol={symbol} currentPrice={analysis.current_price} />
-            <TechnicalIndicators data={analysis.technical_analysis} />
+            <ChartView
+              symbol={symbol}
+              timeRange={timeRange}
+              onTimeRangeChange={setTimeRange}
+              onPriceChange={handlePriceChange}
+              currentPrice={analysis.current_price}
+            />
+            <TechnicalIndicators data={analysis} />
             <SupportResistance data={analysis.support_resistance} />
           </div>
 
           {/* Right Column - Trade Panel & News */}
           <div className="space-y-6">
-            <TradePanel data={analysis} symbol={symbol} />
+            <TradePanel
+              data={analysis}
+              symbol={symbol}
+              onAskAI={handleAskAI}
+            />
             <NewsPanel news={analysis.latest_news} />
           </div>
         </div>
 
         {/* AI Chat Button (Floating) */}
         <button
-          onClick={() => setShowChat(true)}
+          onClick={handleOpenChat}
           className="fixed bottom-6 right-6 w-14 h-14 bg-primary-600 hover:bg-primary-700 text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 z-40"
         >
           <MessageCircle className="w-6 h-6" />
@@ -121,15 +180,7 @@ export default function StockDetail() {
       {showChat && (
         <ChatInterface
           onClose={() => setShowChat(false)}
-          context={{
-            type: 'stock',
-            symbol: analysis.symbol,
-            current_price: analysis.current_price,
-            signal: analysis.recommendation.signal,
-            has_position: !!trade,
-            buy_price: trade?.buyPrice,
-            quantity: trade?.quantity,
-          }}
+          context={chatContext || { type: 'stock', symbol, current_price: analysis?.current_price }}
         />
       )}
     </div>

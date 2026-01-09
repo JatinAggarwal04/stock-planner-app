@@ -4,14 +4,15 @@ import { watchlistService } from '../services/watchlistService'
 
 export const useWatchlistStore = create((set, get) => ({
   watchlist: [],
-  trades: {},
+  trades: {}, // Active Portfolio
+  transactions: {}, // History per symbol
   initialized: false,
   userId: null,
 
   // Initialize from Supabase
   initialize: async (userId) => {
     if (!userId) return
-    
+
     set({ userId })
     const watchlist = await watchlistService.getWatchlist(userId)
     const trades = await watchlistService.getTrades(userId)
@@ -44,34 +45,48 @@ export const useWatchlistStore = create((set, get) => ({
     const { userId } = get()
     if (!userId) return
 
-    await watchlistService.recordTrade(userId, symbol, tradeData)
-    set({
-      trades: {
-        ...get().trades,
-        [symbol]: {
-          ...tradeData,
-          buyDate: tradeData.buyDate || new Date().toISOString(),
-          type: tradeData.type || 'BUY',
-        },
-      },
-    })
+    const result = await watchlistService.recordTrade(userId, symbol, tradeData)
+
+    if (result.success) {
+      // Optimistically update or re-fetch?
+      // Let's re-fetch to be safe with the math logic
+      const trades = await watchlistService.getTrades(userId)
+
+      // Also update transactions for this symbol
+      const history = await watchlistService.getTransactions(userId, symbol)
+
+      set({
+        trades,
+        transactions: {
+          ...get().transactions,
+          [symbol]: history
+        }
+      })
+    }
   },
 
   getTrade: (symbol) => {
     return get().trades[symbol] || null
   },
 
-  removeTrade: async (symbol) => {
+  fetchTransactions: async (symbol) => {
     const { userId } = get()
     if (!userId) return
 
-    await watchlistService.removeTrade(userId, symbol)
-    const trades = { ...get().trades }
-    delete trades[symbol]
-    set({ trades })
+    const history = await watchlistService.getTransactions(userId, symbol)
+    set({
+      transactions: {
+        ...get().transactions,
+        [symbol]: history
+      }
+    })
+  },
+
+  getHistory: (symbol) => {
+    return get().transactions[symbol] || []
   },
 
   clearWatchlist: () => {
-    set({ watchlist: [], trades: {}, initialized: false, userId: null })
+    set({ watchlist: [], trades: {}, transactions: {}, initialized: false, userId: null })
   },
 }))

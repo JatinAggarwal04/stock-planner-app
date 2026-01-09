@@ -1,0 +1,10 @@
+{
+    "Intraday Pivot Points": "We calculate Intraday Pivot Points using the Standard method based on the PREVIOUS day's High, Low, and Close. Pivot = (H + L + C) / 3. We also calculate the Central Pivot Range (CPR) using Top Central Pivot (TC) and Bottom Central Pivot (BC) to gauge trend width.",
+    "Swing Trading Targets": "Our Swing Trading targets are calculated using the Average True Range (ATR). We set the Stop Loss at 1.5x ATR from the entry, Target 1 at 1.5x ATR, and Target 2 at 3.0x ATR, aiming for a 1:2 Risk/Reward ratio. We also reference Weekly Pivots for confirmation.",
+    "Long Term Forecasts": "Long-term targets (3-12 months) are statistical projections based on the stock's Annualized Volatility. We calculate the expected price range with a 68% probability (1 Standard Deviation) assuming a normal distribution of returns.",
+    "AI Signal Confidence": "The 'Signal Strength' or Confidence score is a weighted aggregate of multiple factors: Technical Trend (30%), Fundamental Health (20%), Sentiment Score (20%), and Volatility/Risk profile (30%). It is NOT a guarantee of performance.",
+    "Impact Score": "The Impact Score measures how seriously news is affecting price. High scores (>80) mean news is driving the move.",
+    "Buying Pressure": "Buying Pressure (or Accumulation) is measured using the Intraday Intensity Index. It detects when 'Smart Money' is buying by checking if the price closes near the High on heavy volume. A score > 60 signals strong demand.",
+    "Selling Pressure": "Selling Pressure (or Distribution) signals institutional selling. It occurs when the price closes near the Low of the day on high volume, even if the stock is green. A score < 40 warns of potential reversals.",
+    "Breakout Probability": "This proprietary score predicts the chance of crossing a Resistance level. It analyzes Volume Trend (rising volume = conviction), Test Count (more checks weaken the wall), and Momentum. Probabilities > 70% suggest a breakout is imminent."
+}

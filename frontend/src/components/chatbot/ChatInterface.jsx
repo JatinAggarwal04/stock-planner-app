@@ -24,6 +24,9 @@ export default function ChatInterface({ onClose, context = 'general' }) {
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
 
+  // Track if we've already run the initial analysis for this session
+  const hasAnalysisRun = useRef(false)
+
   useEffect(() => {
     scrollToBottom()
   }, [messages])
@@ -33,11 +36,45 @@ export default function ChatInterface({ onClose, context = 'general' }) {
     if (context.type === 'stock') {
       geminiService.resetChat()
       geminiService.startChat(context)
+
+      // Auto-send if trading plan is present AND hasn't run yet AND it's a fresh chat
+      if (context.trading_plan && !hasAnalysisRun.current && messages.length === 1) {
+        hasAnalysisRun.current = true
+        const initialQuery = "Analyze my position based on the quantitative trading plan. What should I do?"
+
+        // 1. Add user message
+        setMessages(prev => [...prev, {
+          role: 'user',
+          content: initialQuery,
+          timestamp: new Date()
+        }])
+
+        // 2. Trigger API call
+        setLoading(true)
+        geminiService.sendMessage(initialQuery, context)
+          .then(response => {
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: response,
+              timestamp: new Date()
+            }])
+          })
+          .catch(() => {
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: "I'm having trouble analyzing the plan right now.",
+              timestamp: new Date(),
+              error: true
+            }])
+          })
+          .finally(() => setLoading(false))
+      }
+
     } else {
       geminiService.resetChat()
       geminiService.startChat('general')
     }
-  }, [context])
+  }, []) // Empty dependency array - run only once on mount
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -167,8 +204,8 @@ export default function ChatInterface({ onClose, context = 'general' }) {
               </motion.div>
             )}
 
-            {/* Quick Prompts (show only on first message) */}
-            {messages.length === 1 && context.type === 'stock' && (
+            {/* Quick Prompts (show only on first message and no trading plan) */}
+            {messages.length === 1 && context.type === 'stock' && !context.trading_plan && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}

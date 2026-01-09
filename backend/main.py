@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import feedparser
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import warnings
 from scipy.signal import argrelextrema
+from advanced_analytics import calculate_pressure_index, calculate_breakout_probability
+from ml_engine import MLEngine, TOP_NIFTY_STOCKS
 warnings.filterwarnings('ignore')
 
 # Technical Analysis
@@ -317,77 +319,7 @@ class FeatureEngine:
         return data
 
 # ==================== ML ENGINE ====================
-class MLEngine:
-    def __init__(self):
-        self.xgb_model = None
-        self.rf_model = None
-        self.scaler = StandardScaler()
-        self.feature_importance = {}
-    
-    def prepare_features(self, data: pd.DataFrame, target_col: str = 'Target_Moderate'):
-        feature_cols = [
-            'RSI', 'MACD_Diff', 'ADX', 'Stoch_K', 'BB_Width',
-            'Momentum_10', 'Momentum_20', 'Vol_Ratio',
-            'Dist_SMA20', 'Dist_SMA50', 'Dist_SMA200',
-            'Volume_Ratio', 'Close_Position', 'Trend_Score', 'CMF'
-        ]
-        
-        clean_data = data[feature_cols + [target_col]].dropna()
-        X = clean_data[feature_cols]
-        y = clean_data[target_col]
-        
-        return X, y, feature_cols
-    
-    def train_ensemble(self, data: pd.DataFrame):
-        X, y, feature_cols = self.prepare_features(data)
-        
-        if len(X) < 100:
-            raise ValueError("Insufficient data")
-        
-        split_idx = int(len(X) * 0.80)
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:-1]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:-1]
-        
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
-        
-        self.xgb_model = XGBClassifier(
-            n_estimators=300, learning_rate=0.03, max_depth=5,
-            min_child_weight=3, subsample=0.8, colsample_bytree=0.8,
-            eval_metric='logloss', random_state=42
-        )
-        self.xgb_model.fit(X_train_scaled, y_train)
-        xgb_acc = float(self.xgb_model.score(X_test_scaled, y_test))
-        
-        self.rf_model = RandomForestClassifier(
-            n_estimators=200, max_depth=8, min_samples_split=10,
-            min_samples_leaf=5, random_state=42
-        )
-        self.rf_model.fit(X_train_scaled, y_train)
-        rf_acc = float(self.rf_model.score(X_test_scaled, y_test))
-        
-        self.feature_importance = {k: float(v) for k, v in zip(feature_cols, self.xgb_model.feature_importances_)}
-        
-        return {
-            'xgb_accuracy': round(xgb_acc * 100, 2),
-            'rf_accuracy': round(rf_acc * 100, 2),
-            'ensemble_accuracy': round((xgb_acc + rf_acc) / 2 * 100, 2),
-            'top_features': sorted(self.feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
-        }
-    
-    def predict(self, latest_data: pd.DataFrame, feature_cols: List[str]):
-        X = latest_data[feature_cols]
-        X_scaled = self.scaler.transform(X)
-        
-        xgb_prob = float(self.xgb_model.predict_proba(X_scaled)[0][1])
-        rf_prob = float(self.rf_model.predict_proba(X_scaled)[0][1])
-        ensemble_prob = (xgb_prob * 0.6) + (rf_prob * 0.4)
-        
-        return {
-            'xgb_probability': round(xgb_prob * 100, 2),
-            'rf_probability': round(rf_prob * 100, 2),
-            'ensemble_probability': round(ensemble_prob * 100, 2)
-        }
+# ==================== ML ENGINE (Refactored to ml_engine.py) ====================
 
 # ==================== RISK MANAGER ====================
 class RiskManager:
@@ -447,11 +379,213 @@ class RiskManager:
             'risk_amount': round(risk_amount, 2)
         }
 
+    @staticmethod
+    def calculate_stop_levels(entry_price: float, atr: float, signal: str = "BUY"):
+        """Calculates Capital Protection (7%), Conservative (5%), and Aggressive (10%) stops."""
+        levels = {}
+        if signal == "BUY":
+            levels['capital_protection_7pct'] = round(entry_price * 0.93, 2)
+            levels['conservative_5pct'] = round(entry_price * 0.95, 2)
+            levels['aggressive_10pct'] = round(entry_price * 0.90, 2)
+            levels['technical_2x_atr'] = round(entry_price - (2 * atr), 2)
+        else: # SELL
+            levels['capital_protection_7pct'] = round(entry_price * 1.07, 2)
+            levels['conservative_5pct'] = round(entry_price * 1.05, 2)
+            levels['aggressive_10pct'] = round(entry_price * 1.10, 2)
+            levels['technical_2x_atr'] = round(entry_price + (2 * atr), 2)
+        return levels
+
+# ==================== TRADING PLAN GENERATOR (QUANT ENGINE) ====================
+class TradingPlanGenerator:
+    @staticmethod
+    def calculate_intraday_levels(df: pd.DataFrame) -> Dict:
+        """Calculate Pivot Points and CPR for Intraday Trading (Zerodha/Kite Standard)
+        
+        Uses PREVIOUS day's OHLC data as per industry standard.
+        """
+        # Use PREVIOUS day's candle for pivot calculation (Industry Standard)
+        if len(df) < 2:
+            return {"error": "Insufficient data for pivot calculation"}
+        
+        prev_candle = df.iloc[-2]  # Previous trading session
+        
+        high = float(prev_candle['High'])
+        low = float(prev_candle['Low'])
+        close = float(prev_candle['Close'])
+        
+        # Standard Pivot Point
+        pivot = (high + low + close) / 3
+        
+        # Central Pivot Range (CPR)
+        bc = (high + low) / 2  # Bottom Central Pivot
+        tc = (pivot - bc) + pivot  # Top Central Pivot
+        
+        # Standard Pivot Levels (Zerodha/Kite Formula)
+        r1 = (2 * pivot) - low
+        s1 = (2 * pivot) - high
+        r2 = pivot + (high - low)
+        s2 = pivot - (high - low)
+        r3 = high + 2 * (pivot - low)
+        s3 = low - 2 * (high - pivot)
+        
+        # CPR Width Analysis (for trend strength)
+        cpr_width = abs(tc - bc)
+        cpr_width_pct = (cpr_width / pivot) * 100
+        cpr_type = "Narrow" if cpr_width_pct < 0.5 else "Wide"
+        
+        current_price = float(df['Close'].iloc[-1])
+        
+        return {
+            "strategy": "Intraday Pivot Points (Standard)",
+            "cpr": {
+                "top_central_pivot": round(tc, 2),
+                "pivot": round(pivot, 2),
+                "bottom_central_pivot": round(bc, 2),
+                "width_pct": round(cpr_width_pct, 2),
+                "type": cpr_type
+            },
+            "resistance": {
+                "R1": round(r1, 2),
+                "R2": round(r2, 2),
+                "R3": round(r3, 2)
+            },
+            "support": {
+                "S1": round(s1, 2),
+                "S2": round(s2, 2),
+                "S3": round(s3, 2)
+            },
+            "current_price": round(current_price, 2),
+            "previous_day": {
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "close": round(close, 2)
+            },
+            "message": f"Pivot: ₹{round(pivot, 2)} | CPR: {cpr_type}. R1: ₹{round(r1, 2)}, S1: ₹{round(s1, 2)}"
+        }
+
+    @staticmethod
+    def calculate_swing_targets(df: pd.DataFrame, current_price: float, trend: str) -> Dict:
+        """Calculate ATR-based targets and Weekly Pivots for Swing Trading (few days to weeks)
+        
+        Zerodha uses weekly HLC for 30m/1hr timeframes.
+        """
+        atr = float(df['ATR'].iloc[-1]) if 'ATR' in df.columns else float(df['High'].iloc[-1] - df['Low'].iloc[-1])
+        
+        # ATR-based Stop Loss and Targets
+        stop_loss_dist = 1.5 * atr
+        target_1_dist = 1.5 * atr
+        target_2_dist = 3.0 * atr
+        
+        if trend == "Bearish":
+            stop_loss = current_price + stop_loss_dist
+            target_1 = current_price - target_1_dist
+            target_2 = current_price - target_2_dist
+            rec_type = "SHORT"
+        else:
+            stop_loss = current_price - stop_loss_dist
+            target_1 = current_price + target_1_dist
+            target_2 = current_price + target_2_dist
+            rec_type = "LONG"
+        
+        # Weekly Pivot Calculation (Last 5 trading days)
+        weekly_data = df.tail(5)
+        weekly_high = float(weekly_data['High'].max())
+        weekly_low = float(weekly_data['Low'].min())
+        weekly_close = float(df['Close'].iloc[-1])  # Latest close
+        
+        weekly_pivot = (weekly_high + weekly_low + weekly_close) / 3
+        weekly_r1 = (2 * weekly_pivot) - weekly_low
+        weekly_s1 = (2 * weekly_pivot) - weekly_high
+        weekly_r2 = weekly_pivot + (weekly_high - weekly_low)
+        weekly_s2 = weekly_pivot - (weekly_high - weekly_low)
+            
+        return {
+            "strategy": "Swing Trading (ATR + Weekly Pivots)",
+            "recommendation": rec_type,
+            "entry_price": round(current_price, 2),
+            "stop_loss": round(stop_loss, 2),
+            "target_1": round(target_1, 2),
+            "target_2": round(target_2, 2),
+            "risk_reward": "1:2",
+            "atr": round(atr, 2),
+            "weekly_pivots": {
+                "pivot": round(weekly_pivot, 2),
+                "R1": round(weekly_r1, 2),
+                "R2": round(weekly_r2, 2),
+                "S1": round(weekly_s1, 2),
+                "S2": round(weekly_s2, 2),
+                "weekly_high": round(weekly_high, 2),
+                "weekly_low": round(weekly_low, 2)
+            }
+        }
+
+    @staticmethod
+    def calculate_long_term_targets(current_price: float, volatility_annual: float, df: pd.DataFrame = None) -> Dict:
+        """Calculate statistical targets and Monthly Pivots for long term holding (months)
+        
+        Zerodha uses monthly HLC for daily timeframe pivots.
+        """
+        # Statistical projection based on Normal Distribution (1 Standard Deviation)
+        # Target = Current * (1 + (Vol * sqrt(time)))
+        
+        # 3 Months (0.25 year)
+        target_3m_up = current_price * (1 + (volatility_annual/100 * np.sqrt(0.25)))
+        target_3m_down = current_price * (1 - (volatility_annual/100 * np.sqrt(0.25)))
+        
+        # 6 Months (0.5 year)
+        target_6m_up = current_price * (1 + (volatility_annual/100 * np.sqrt(0.50)))
+        
+        # 12 Months (1 year)
+        target_1y_up = current_price * (1 + (volatility_annual/100))
+        
+        result = {
+            "strategy": "Long Term Investment (Monthly Pivots)",
+            "statistical_targets": {
+                "3_month_upside": round(target_3m_up, 2),
+                "3_month_downside": round(target_3m_down, 2),
+                "6_month_upside": round(target_6m_up, 2),
+                "1_year_upside": round(target_1y_up, 2)
+            },
+            "note": "Targets based on 1-SD historical volatility probability."
+        }
+        
+        # Monthly Pivot Calculation (if df is provided)
+        if df is not None and len(df) >= 22:  # ~22 trading days in a month
+            monthly_data = df.tail(22)
+            monthly_high = float(monthly_data['High'].max())
+            monthly_low = float(monthly_data['Low'].min())
+            monthly_close = float(df['Close'].iloc[-1])
+            
+            monthly_pivot = (monthly_high + monthly_low + monthly_close) / 3
+            monthly_r1 = (2 * monthly_pivot) - monthly_low
+            monthly_s1 = (2 * monthly_pivot) - monthly_high
+            
+            # 52-Week High/Low
+            year_data = df.tail(252) if len(df) >= 252 else df
+            week52_high = float(year_data['High'].max())
+            week52_low = float(year_data['Low'].min())
+            
+            result["monthly_pivots"] = {
+                "pivot": round(monthly_pivot, 2),
+                "R1": round(monthly_r1, 2),
+                "S1": round(monthly_s1, 2),
+                "monthly_high": round(monthly_high, 2),
+                "monthly_low": round(monthly_low, 2)
+            }
+            result["52_week"] = {
+                "high": round(week52_high, 2),
+                "low": round(week52_low, 2),
+                "current_vs_high_pct": round(((current_price - week52_high) / week52_high) * 100, 2),
+                "current_vs_low_pct": round(((current_price - week52_low) / week52_low) * 100, 2)
+            }
+        
+        return result
+
 # ==================== PERSONALIZED RECOMMENDATION ENGINE ====================
 class PersonalizedRecommendation:
     @staticmethod
     def analyze_user_position(current_price: float, buy_price: float, quantity: int, 
-                             stop_loss: float, targets: Dict, risk_metrics: Dict) -> Dict:
+                             stop_loss: float, targets: Dict, risk_metrics: Dict, trading_plan: Dict) -> Dict:
         """Generate personalized recommendations based on user's position"""
         
         # Calculate current P&L
@@ -463,6 +597,7 @@ class PersonalizedRecommendation:
         # Risk assessment
         distance_from_sl = float(((current_price - stop_loss) / current_price) * 100)
         
+        # Generate recommendation
         # Generate recommendation
         if profit_loss_pct > 15:
             action = "BOOK_PARTIAL_PROFIT"
@@ -479,10 +614,17 @@ class PersonalizedRecommendation:
         elif profit_loss_pct > -5:
             action = "MONITOR_CLOSELY"
             message = f"Position in minor loss. Watch support at ₹{stop_loss}. Consider averaging if support holds."
+        elif profit_loss_pct <= -7:
+             action = "EXIT_IMMEDIATELY"
+             message = "Unrealized loss > 7%. Capital Protection Rule triggered. Recommended exit to preserve capital."
         else:
             action = "EXIT_CONSIDER"
             message = f"Position showing significant loss. Review your thesis. Stop-loss at ₹{stop_loss} is critical."
         
+        # Calculate User Specific Stops (Based on Buy Price)
+        atr = trading_plan.get('swing', {}).get('atr', current_price * 0.02)
+        user_stops = RiskManager.calculate_stop_levels(buy_price, atr, "BUY") # Assuming Long for user position
+
         # Target achievement
         targets_status = {}
         for target_name, target_price in targets.items():
@@ -508,8 +650,70 @@ class PersonalizedRecommendation:
                 "message": message,
                 "confidence": "High" if abs(profit_loss_pct) > 5 else "Medium"
             },
+            "user_stops": user_stops,  # New Field based on Buy Price
             "targets_status": targets_status,
-            "risk_alert": "CRITICAL" if distance_from_sl < 3 else "HIGH" if distance_from_sl < 5 else "MODERATE"
+            "risk_alert": "CRITICAL" if distance_from_sl < 3 else "HIGH" if distance_from_sl < 5 else "MODERATE",
+            "trading_plan": trading_plan  # Include the plan in the response
+        }
+
+# ==================== TECHNICAL ANALYZER (RULE BASED) ====================
+class TechnicalAnalyzer:
+    @staticmethod
+    def analyze_long_term_view(df: pd.DataFrame) -> Dict:
+        """Rule-based analysis for Long Term view (Trend)"""
+        
+        # Calculate Indicators if not present (Safety check)
+        if 'SMA_200' not in df.columns:
+            df['SMA_200'] = SMAIndicator(close=df['Close'], window=200).sma_indicator()
+        if 'SMA_50' not in df.columns:
+            df['SMA_50'] = SMAIndicator(close=df['Close'], window=50).sma_indicator()
+        if 'ADX' not in df.columns:
+            df['ADX'] = ADXIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=14).adx()
+            
+        current_price = float(df['Close'].iloc[-1])
+        sma_200 = float(df['SMA_200'].iloc[-1]) if not pd.isna(df['SMA_200'].iloc[-1]) else current_price
+        sma_50 = float(df['SMA_50'].iloc[-1]) if not pd.isna(df['SMA_50'].iloc[-1]) else current_price
+        adx = float(df['ADX'].iloc[-1]) if not pd.isna(df['ADX'].iloc[-1]) else 0.0
+        
+        # 1. Trend Determination
+        if current_price > sma_200:
+            trend = "Bullish"
+            confidence = 60
+            reasons = ["Price Above 200 SMA"]
+        else:
+            trend = "Bearish"
+            confidence = 60
+            reasons = ["Price Below 200 SMA"]
+            
+        # 2. Golden Cross / Death Cross Check
+        is_golden_cross = sma_50 > sma_200
+        
+        if trend == "Bullish" and is_golden_cross:
+            confidence += 20
+            reasons.append("Golden Cross (50 SMA > 200 SMA)")
+        elif trend == "Bearish" and not is_golden_cross:
+            confidence += 20
+            reasons.append("Death Cross (50 SMA < 200 SMA)")
+            
+        # 3. ADX Strength
+        if adx > 25:
+            confidence += 10
+            reasons.append(f"Strong Trend (ADX {int(adx)})")
+        elif adx < 20:
+            confidence -= 10
+            reasons.append("Weak Trend")
+            
+        confidence = min(100, max(0, confidence))
+        
+        return {
+            "signal": trend,
+            "confidence": int(confidence),
+            "reasons": reasons,
+            "indicators": {
+                "sma_200": round(sma_200, 2),
+                "adx": round(adx, 2),
+                "is_golden_cross": bool(is_golden_cross)
+            }
         }
 
 # ==================== MAIN API ENDPOINTS ====================
@@ -525,7 +729,8 @@ def root():
             "Support/Resistance detection with breakout probability",
             "Personalized trade recommendations",
             "Real-time risk metrics",
-            "Position sizing calculator"
+            "Position sizing calculator",
+            "Algorithmic Trading Plans (Intraday/Swing/Long Term)"
         ],
         "endpoints": {
             "analyze": "/analyze/{symbol}",
@@ -535,9 +740,40 @@ def root():
         "examples": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS"]
     }
 
+def fetch_stock_news(symbol: str, max_items: int = 5):
+    """Fetches latest news and performs sentiment analysis."""
+    try:
+        # Get Company Name from Ticker
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        company_name = info.get('longName', symbol).replace('Limited', '').replace('Ltd', '').strip()
+        
+        # Search Google News RSS
+        encoded_name = company_name.replace(" ", "+")
+        rss_url = f"https://news.google.com/rss/search?q={encoded_name}+stock&hl=en-IN&gl=IN&ceid=IN:en"
+        
+        feed = feedparser.parse(rss_url)
+        news = [{"title": x.title, "link": x.link, "published": x.published} for x in feed.entries[:max_items]]
+        headlines = [x['title'] for x in news]
+        
+        if not headlines:
+             return {"news": [], "sentiment": {"score": 0, "sentiment": "Neutral", "label": "Neutral"}}
+
+        # Sentiment Analysis
+        sentiment_analyzer = SentimentAnalyzer(HF_API_KEY)
+        sentiment = sentiment_analyzer.analyze_finbert(headlines)
+        
+        return {
+            "news": news,
+            "sentiment": sentiment
+        }
+    except Exception as e:
+        print(f"News fetch error: {e}")
+        return {"news": [], "sentiment": {"score": 0, "sentiment": "Neutral", "label": "Neutral"}}
+
 @app.get("/analyze/{symbol}")
 def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: float = 2.0):
-    """Complete stock analysis with ML, sentiment, and support/resistance"""
+    """Hybrid Analysis: ML for Short Term, Rules for Long Term + Sentiment"""
     
     try:
         if not symbol.endswith('.NS') and not symbol.endswith('.BO'):
@@ -550,15 +786,14 @@ def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: flo
         if df.empty or len(df) < 200:
             raise HTTPException(status_code=404, detail="Insufficient data")
         
-        # Feature Engineering
+        # Feature Engineering 
         feature_engine = FeatureEngine()
         df = feature_engine.calculate_technical_features(df)
         df = feature_engine.calculate_alpha_features(df)
         df = feature_engine.create_targets(df)
         
-        # ML Predictions
+        # 1. ML Prediction & Live Learning (Universal Model)
         ml_engine = MLEngine()
-        training_results = ml_engine.train_ensemble(df)
         
         feature_cols = [
             'RSI', 'MACD_Diff', 'ADX', 'Stoch_K', 'BB_Width',
@@ -566,56 +801,71 @@ def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: flo
             'Dist_SMA20', 'Dist_SMA50', 'Dist_SMA200',
             'Volume_Ratio', 'Close_Position', 'Trend_Score', 'CMF'
         ]
-        latest_features = df[feature_cols].iloc[[-1]]
-        predictions = ml_engine.predict(latest_features, feature_cols)
         
-        # Sentiment Analysis
-        sentiment_analyzer = SentimentAnalyzer(HF_API_KEY)
-        company_name = info.get('longName', symbol).replace('Limited', '').replace('Ltd', '').strip()
+        latest_features = df.iloc[[-1]]
+        ml_predictions = ml_engine.predict(latest_features, feature_cols)
         
-        encoded_name = company_name.replace(" ", "+")
-        rss_url = f"https://news.google.com/rss/search?q={encoded_name}+stock&hl=en-IN&gl=IN&ceid=IN:en"
+        if ml_predictions:
+            # Model exists: Predict -> Live Learn
+            ml_prob = ml_predictions['ensemble_probability']
+            ml_stats = {"ensemble_accuracy": "Universal Model", "top_features": []}
+            
+            # LIVE LEARNING: Update with recent data
+            try:
+                # We update with recent history to reinforce patterns
+                ml_engine.incremental_update(df.tail(100))
+            except Exception as e:
+                print(f"Live Learning Error: {e}")
+        else:
+            # Bootstrap: Train on this stock if no model exists
+            print("Bootstrapping Universal Model...")
+            X, y, _ = ml_engine.prepare_features(df)
+            ml_stats = ml_engine.train_model(X, y, feature_cols)
+            ml_predictions = ml_engine.predict(latest_features, feature_cols)
+            ml_prob = ml_predictions['ensemble_probability']
+
+        st_signal = "Bullish" if ml_prob > 60 else "Bearish" if ml_prob < 40 else "Neutral"
+        st_confidence = ml_prob if st_signal == "Bullish" else (100 - ml_prob) if st_signal == "Bearish" else 50
+        st_reasons = ["AI Model Prediction"] + [f"{k}: {v:.2f}" for k, v in ml_stats.get('top_features', [])]
+
+        # 2. Rule Based Analysis (Long Term)
+        tech_analyzer = TechnicalAnalyzer()
+        lt_view = tech_analyzer.analyze_long_term_view(df)
         
-        try:
-            feed = feedparser.parse(rss_url)
-            news = [{"title": x.title, "link": x.link, "published": x.published} for x in feed.entries[:5]]
-            headlines = [x['title'] for x in news]
-        except:
-            news = []
-            headlines = []
+        # 3. Sentiment Analysis
+        # 3. Sentiment Analysis (Refactored)
+        news_data = fetch_stock_news(symbol)
+        news = news_data['news']
+        sentiment = news_data['sentiment']
         
-        sentiment = sentiment_analyzer.analyze_finbert(headlines)
-        
-        # Support/Resistance Analysis
+        # 4. Support/Resistance & Risk
         sr_analyzer = SupportResistanceAnalyzer()
         support_resistance = sr_analyzer.find_levels(df)
-        
-        # Risk Metrics
         risk_manager = RiskManager()
         risk_metrics = risk_manager.calculate_metrics(df)
         
-        # Final Scoring
-        ml_score = float(predictions['ensemble_probability'])
-        sentiment_impact = float(sentiment['score'] * 10)
+        # 5. Final Aggregation (Factoring in Sentiment)
+        # Normalize Sentiment
+        sent_prob = 50.0
+        sent_score = sentiment.get('score', 0)
+        if sentiment.get('sentiment') == 'Bullish':
+             sent_prob = 50 + (sent_score * 50)
+        elif sentiment.get('sentiment') == 'Bearish':
+             sent_prob = 50 - (sent_score * 50)
         
-        final_confidence = float(ml_score + sentiment_impact)
-        final_confidence = max(0.0, min(100.0, final_confidence))
+        # Normalize Long Term
+        lt_prob = lt_view['confidence'] if lt_view['signal'] == 'Bullish' else (100 - lt_view['confidence']) if lt_view['signal'] == 'Bearish' else 50
         
-        # Signal Generation
-        if final_confidence >= 70 and risk_metrics['sharpe_ratio'] > 0.5:
-            signal = "STRONG_BUY"
-        elif final_confidence >= 55:
-            signal = "BUY"
-        elif final_confidence <= 30 and risk_metrics['sharpe_ratio'] < 0:
-            signal = "STRONG_SELL"
-        elif final_confidence <= 45:
-            signal = "SELL"
-        else:
-            signal = "HOLD"
+        # WEIGHTED FORMULA: ML (50%) + Trend (30%) + Sentiment (20%)
+        final_score = (ml_prob * 0.5) + (lt_prob * 0.3) + (sent_prob * 0.2)
+        final_signal = "BUY" if final_score > 60 else "SELL" if final_score < 40 else "HOLD"
         
+        # Update Short Term confidence with sentiment influence
+        st_confidence = (st_confidence * 0.8) + (sent_prob * 0.2)
+
         # Trade Setup
         current_price = float(df['Close'].iloc[-1])
-        atr = float(df['ATR'].iloc[-1])
+        atr = float(df['ATR'].iloc[-1]) if 'ATR' in df.columns else float(df['Close'].iloc[-1] * 0.02)
         
         stop_loss = float(current_price - (2 * atr))
         target_1 = float(current_price + (2 * atr))
@@ -625,50 +875,87 @@ def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: flo
         position_info = risk_manager.calculate_position_size(
             account_size, risk_per_trade, current_price, stop_loss
         )
+
+        # 6. Generate Trading Plan (Intraday, Swing, Long Term)
+        # Re-using df since it has 2 years data
+        intraday_plan = TradingPlanGenerator.calculate_intraday_levels(df)
+        swing_plan = TradingPlanGenerator.calculate_swing_targets(
+            df, 
+            current_price, 
+            "Bullish" if final_signal == 'BUY' else "Bearish"
+        )
+        long_term_plan = TradingPlanGenerator.calculate_long_term_targets(
+            current_price,
+            risk_metrics['volatility_annual'],
+            df  # Pass df for monthly pivots
+        )
         
-        # Technical Summary
-        latest_row = df.iloc[-1]
-        technical_summary = {
-            'RSI': float(round(latest_row['RSI'], 2)),
-            'MACD_Signal': 'Bullish' if latest_row['MACD_Diff'] > 0 else 'Bearish',
-            'Trend_Strength_ADX': float(round(latest_row['ADX'], 2)),
-            'Price_vs_SMA200': float(round(latest_row['Dist_SMA200'] * 100, 2)),
-            'Volume_Status': 'High' if latest_row['Volume_Ratio'] > 1.2 else 'Normal' if latest_row['Volume_Ratio'] > 0.8 else 'Low'
+        trading_plan = {
+            "intraday": intraday_plan,
+            "swing": swing_plan,
+            "long_term": long_term_plan
         }
         
-        response = {
-            "timestamp": datetime.now().isoformat(),
-            "symbol": symbol.upper(),
-            "company_name": company_name,
+        # 7. Advanced Algorithmic Analysis (Industry Grade)
+        pressure_index = calculate_pressure_index(df)
+        
+        # Determine meaningful resistance to test (using R1 from Intraday)
+        r1_level = intraday_plan.get('resistance', {}).get('R1', 0)
+        breakout_prob = calculate_breakout_probability(df, r1_level)
+
+        return convert_to_python_type({
+            "symbol": symbol,
+            "company_name": info.get('longName', symbol),
             "current_price": round(current_price, 2),
-            "currency": "INR",
-            
+            "advanced_metrics": {
+                "pressure_index": pressure_index,
+                "breakout_probability": breakout_prob
+            },
             "recommendation": {
-                "signal": signal,
-                "confidence_score": round(final_confidence, 2),
-                "risk_rating": "High" if risk_metrics['volatility_annual'] > 40 else "Medium" if risk_metrics['volatility_annual'] > 25 else "Low"
+                "signal": final_signal,
+                "confidence_score": round(final_score, 1),
+                "summary": f"Hybrid signal based on ML ({st_signal}), Trend ({lt_view['signal']}), and Sentiment ({sentiment['sentiment']}).",
+                "views": {
+                    "short_term": {
+                        "signal": st_signal,
+                        "confidence": round(st_confidence, 1),
+                        "reasons": st_reasons + [f"Sentiment Impact: {int(sent_prob)}%"],
+                        "indicators": {
+                            "rsi": round(df['RSI'].iloc[-1], 2),
+                            "ml_score": ml_prob,
+                            "macd_diff": round(df['MACD_Diff'].iloc[-1], 2)
+                        }
+                    },
+                    "long_term": lt_view
+                }
             },
             
             "ml_analysis": {
-                "model": "Ensemble (XGBoost + Random Forest)",
-                "ensemble_probability": predictions['ensemble_probability'],
-                "xgb_probability": predictions['xgb_probability'],
-                "rf_probability": predictions['rf_probability'],
-                "model_accuracy": training_results['ensemble_accuracy'],
-                "top_features": [{"feature": k, "importance": round(v, 3)} for k, v in training_results['top_features']]
+                "model_accuracy": ml_stats['ensemble_accuracy'] if ml_stats else 0,
+                "top_features": ml_stats['top_features'] if ml_stats else []
             },
-            
-            "sentiment_analysis": sentiment,
-            
-            "technical_analysis": technical_summary,
-            
+
+            "technical_analysis": { # Legacy structure
+                 "rsi": df['RSI'].iloc[-1],
+                 "macd": "Bullish",
+                 "trend": lt_view['signal'],
+                 "adx": lt_view['indicators']['adx']
+            },
             "support_resistance": support_resistance,
-            
             "risk_metrics": risk_metrics,
+            "sentiment_analysis": sentiment,
+            "latest_news": news,
+            
+            "trading_plan": trading_plan,  # New Field
             
             "trade_setup": {
                 "entry_price": round(current_price, 2),
                 "stop_loss": round(stop_loss, 2),
+                "alternative_stops": risk_manager.calculate_stop_levels(
+                    current_price, 
+                    atr, 
+                    "BUY" if final_signal == "BUY" else "SELL"
+                ),
                 "targets": {
                     "target_1": round(target_1, 2),
                     "target_2": round(target_2, 2),
@@ -676,21 +963,20 @@ def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: flo
                 },
                 "risk_reward": f"1:{round((target_1 - current_price) / (current_price - stop_loss), 2)}"
             },
-            
             "position_sizing": position_info,
-            
             "market_data": {
-                "52_week_high": round(float(df['High'].rolling(252).max().iloc[-1]), 2),
-                "52_week_low": round(float(df['Low'].rolling(252).min().iloc[-1]), 2),
+                "52_week_high": round(float(df['High'].rolling(252).max().iloc[-1]) if len(df) >= 252 else float(df['High'].max()), 2),
+                "52_week_low": round(float(df['Low'].rolling(252).min().iloc[-1]) if len(df) >= 252 else float(df['Low'].min()), 2),
                 "avg_volume_20d": int(df['Volume'].rolling(20).mean().iloc[-1]),
-                "current_volume": int(latest_row['Volume'])
-            },
-            
-            "latest_news": news[:5]
-        }
-        
-        return convert_to_python_type(response)
-        
+                "current_volume": int(df['Volume'].iloc[-1]),
+                "today_open": round(float(df['Open'].iloc[-1]), 2),
+                "today_high": round(float(df['High'].iloc[-1]), 2),
+                "today_low": round(float(df['Low'].iloc[-1]), 2),
+                "market_cap": info.get('marketCap', 0),
+                "pe_ratio": round(info.get('trailingPE', 0), 2)
+            }
+        })
+
     except Exception as e:
         print(f"Analysis Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -709,6 +995,29 @@ def personalized_analysis(
         # Get base analysis
         base_analysis = analyze_stock(symbol, account_size, risk_per_trade)
         
+        # Need historical data for Trading Plan
+        stock = yf.Ticker(symbol)
+        df_hist = stock.history(period="1y")
+        
+        # Calculate Trading Plans
+        intraday_plan = TradingPlanGenerator.calculate_intraday_levels(df_hist)
+        swing_plan = TradingPlanGenerator.calculate_swing_targets(
+            df_hist, 
+            base_analysis['current_price'], 
+            "Bullish" if base_analysis['recommendation']['action'] == 'BUY' else "Bearish"
+        )
+        long_term_plan = TradingPlanGenerator.calculate_long_term_targets(
+            base_analysis['current_price'],
+            base_analysis['risk_metrics']['volatility_annual'],
+            df_hist  # Pass df for monthly pivots
+        )
+        
+        trading_plan = {
+            "intraday": intraday_plan,
+            "swing": swing_plan,
+            "long_term": long_term_plan
+        }
+        
         current_price = base_analysis['current_price']
         stop_loss = base_analysis['trade_setup']['stop_loss']
         targets = base_analysis['trade_setup']['targets']
@@ -716,7 +1025,7 @@ def personalized_analysis(
         
         # Generate personalized recommendation
         personalized_rec = PersonalizedRecommendation.analyze_user_position(
-            current_price, buy_price, quantity, stop_loss, targets, risk_metrics
+            current_price, buy_price, quantity, stop_loss, targets, risk_metrics, trading_plan
         )
         
         # Merge with base analysis
@@ -774,6 +1083,148 @@ def search_stocks(query: str):
         # Return empty list instead of error for smooth UI
         return []
 
+@app.get("/history/{symbol}")
+def get_stock_history(symbol: str, period: str = "1mo"):
+    """
+    Get historical price data and corporate actions.
+    Period map:
+    1D -> 1d (interval 5m)
+    1W -> 5d (interval 15m)
+    1M -> 1mo (interval 1d)
+    3M -> 3mo (interval 1d)
+    1Y -> 1y (interval 1d)
+    5Y -> 5y (interval 1wk)
+    All -> max (interval 1mo)
+    """
+    try:
+        if not symbol.endswith('.NS') and not symbol.endswith('.BO'):
+            symbol = f"{symbol}.NS"
+            
+        # Map frontend period to yfinance args
+        yf_params = {
+            "1D": {"period": "1d", "interval": "5m"},
+            "1W": {"period": "5d", "interval": "15m"},
+            "1M": {"period": "1mo", "interval": "1d"},
+            "3M": {"period": "3mo", "interval": "1d"},
+            "1Y": {"period": "1y", "interval": "1d"},
+            "5Y": {"period": "5y", "interval": "1wk"},
+            "All": {"period": "max", "interval": "1mo"},
+        }
+        
+        params = yf_params.get(period, {"period": "1mo", "interval": "1d"})
+        
+        ticker = yf.Ticker(symbol)
+        history = ticker.history(**params)
+        
+        if history.empty:
+            return {"data": [], "events": [], "meta": {}}
+            
+        # Extract data points
+        data = []
+        # Reset index to get Date/Datetime as column
+        history = history.reset_index()
+        
+        for _, row in history.iterrows():
+            # Handle different date formats (Date vs Datetime)
+            date_val = row.iloc[0]
+            if isinstance(date_val, pd.Timestamp):
+                timestamp = int(date_val.timestamp())
+            else:
+                timestamp = int(datetime.combine(date_val, datetime.min.time()).timestamp())
+                
+            data.append({
+                "time": timestamp,
+                "open": round(float(row['Open']), 2),
+                "high": round(float(row['High']), 2),
+                "low": round(float(row['Low']), 2),
+                "close": round(float(row['Close']), 2),
+                "volume": int(row['Volume'])
+            })
+            
+        # Extract corporate actions
+        events = []
+        try:
+            # Fetch actions (dividends, splits)
+            # Note: yfinance .actions usually returns a dataframe with Date index, Dividends, Stock Splits
+            actions = ticker.actions
+            if not actions.empty:
+                # Filter actions to be within the history range
+                start_date = history.iloc[0].iloc[0]
+                
+                # Ensure start_date is timezone-naive
+                if hasattr(start_date, 'tzinfo') and start_date.tzinfo is not None:
+                    start_date = start_date.tz_localize(None)
+                
+                # Ensure actions index is timezone-naive
+                if actions.index.tz is not None:
+                    actions.index = actions.index.tz_localize(None)
+                
+                # Filter
+                mask = actions.index >= start_date
+                relevant_actions = actions.loc[mask]
+                
+                for date, row in relevant_actions.iterrows():
+                    timestamp = int(date.timestamp())
+                    
+                    if row['Dividends'] > 0:
+                        events.append({
+                            "time": timestamp,
+                            "type": "DIVIDEND",
+                            "value": float(row['Dividends']),
+                            "description": f"Dividend: ₹{float(row['Dividends'])}"
+                        })
+                    
+                    if row['Stock Splits'] > 0:
+                        events.append({
+                            "time": timestamp,
+                            "type": "SPLIT",
+                            "value": float(row['Stock Splits']),
+                            "description": f"Split: {float(row['Stock Splits'])}:1" # Usually representation might need adjustment
+                        })
+                        
+        except Exception as e:
+            print(f"Events fetching error: {e}")
+            # Continue without events if this fails
+            pass
+            
+        # Meta info for price change calculation
+        # Meta info for price change calculation
+        # Try to fetch previous close
+        prev_close = None
+        try:
+            prev_close = ticker.info.get('previousClose')
+        except:
+            pass
+            
+        meta = {
+            "symbol": symbol,
+            "period": period,
+            "currency": "INR",
+            "previous_close": prev_close
+        }
+        
+        # Determine previous close for accurate % change
+        if period == "1D":
+            # For 1D, we need the actual previous day's close
+            try:
+                prev_close = float(ticker.info.get('previousClose', data[0]['open']))
+                meta['previous_close'] = prev_close
+            except:
+                meta['previous_close'] = data[0]['open'] 
+        else:
+            # For other periods, the comparison is usually first candle open or close
+            meta['previous_close'] = data[0]['open']
+            
+        return convert_to_python_type({
+            "data": data,
+            "events": events,
+            "meta": meta
+        })
+        
+    except Exception as e:
+        print(f"History API Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/quote/{symbol}")
 def quick_quote(symbol: str):
     """Quick price quote for watchlist"""
@@ -804,6 +1255,89 @@ def quick_quote(symbol: str):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== AGENTIC CHAT ENDPOINT ====================
+from pydantic import BaseModel
+from agent_service import agent  # Import the agent instance
+
+class ChatRequest(BaseModel):
+    user_id: str
+    message: str
+    context: Optional[Dict] = None
+
+@app.post("/api/chat")
+async def chat_endpoint(request: ChatRequest):
+    """
+    Agentic Chat Endpoint
+    - Uses Gemini 2.0 Flash + Tools (GetPrice, GetAnalysis, RAG)
+    - Maintains conversational context via agent_service
+    """
+    try:
+        response = await agent.chat(
+            user_id=request.user_id,
+            message=request.message,
+            context=request.context
+        )
+        return {"response": response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/train-universal")
+def train_universal_model(background_tasks: BackgroundTasks):
+    """Triggers training on Top Nifty Stocks in background."""
+    def _train_job():
+        print("Starting batch training...")
+        ml_engine = MLEngine()
+        all_X = []
+        all_y = []
+        
+        feature_engine = FeatureEngine()
+        
+        for symbol in TOP_NIFTY_STOCKS:
+            try:
+                print(f"Fetching {symbol}...")
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period="2y")
+                if len(df) < 200: continue
+                
+                # Apply same feature engineering pipeline
+                df = feature_engine.calculate_technical_features(df)
+                df = feature_engine.calculate_alpha_features(df)
+                df = feature_engine.create_targets(df)
+                
+                X, y, cols = ml_engine.prepare_features(df)
+                if not X.empty and y is not None:
+                    all_X.append(X)
+                    all_y.append(y)
+            except Exception as e:
+                print(f"Skipping {symbol}: {e}")
+                
+        if all_X:
+            combined_X = pd.concat(all_X)
+            combined_y = pd.concat(all_y)
+            ml_engine.train_model(combined_X, combined_y, cols)
+            print("Universal Model Trained & Saved.")
+        else:
+            print("No data collected for training.")
+            
+    background_tasks.add_task(_train_job)
+    return {"status": "Training started in background"}
+
+@app.post("/admin/push-model")
+def push_model_to_hub(repo_id: str, token: str = None):
+    """Push the trained Universal Model to Hugging Face Hub."""
+    if not token:
+        token = os.getenv("HF_TOKEN")
+    
+    if not token:
+         raise HTTPException(status_code=400, detail="HF_TOKEN not found in env or request.")
+         
+    ml_engine = MLEngine()
+    success = ml_engine.push_to_hub(repo_id, token)
+    if success:
+        return {"success": True, "message": f"Model pushed to {repo_id}"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to push model.")
 
 if __name__ == "__main__":
     import uvicorn

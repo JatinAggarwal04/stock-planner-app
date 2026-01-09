@@ -63,6 +63,19 @@ export const stockService = {
     }
   },
 
+  // Get historical data
+  async getHistory(symbol, period = '1mo') {
+    try {
+      const response = await api.get(`/history/${symbol}`, {
+        params: { period }
+      })
+      return response.data
+    } catch (error) {
+      console.error('getHistory error:', error)
+      throw error
+    }
+  },
+
   // Batch quotes
   async getBatchQuotes(symbols) {
     const promises = symbols.map((symbol) => 
