@@ -1,7 +1,7 @@
 //frontend/src/components/BackendStatus.jsx
 import { useQuery } from '@tanstack/react-query'
 import api from '../services/api'
-
+//.
 export default function BackendStatus() {
   const { data, isError } = useQuery({
     queryKey: ['backend-status'],
