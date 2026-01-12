@@ -37,6 +37,28 @@ Use AI to seek smarter returns effectively. **Stock Planner App** is a comprehen
 -   **Machine Learning**: `scikit-learn`, `xgboost`, `joblib`
 -   **AI Integration**: `google-generativeai` (Gemini)
 
+## 🔬 Technical Deep Dive
+
+### 1. Agentic RAG Architecture (Hybrid)
+Unlike standard chatbots, TradeWise uses an **Agentic RAG (Retrieval-Augmented Generation)** approach powered by **Google Gemini 2.5**.
+*   **Context Injection**: Before answering, the system injects real-time data (Price, Signal, Holdings) into the prompt system instructions.
+*   **Tool Use (Function Calling)**: The agent has autonomous access to tools:
+    *   `get_stock_price(symbol)`: Live NSE data via yfinance.
+    *   `get_technical_analysis(symbol)`: Runs the full backend analysis pipeline.
+    *   `get_news_analysis(symbol)`: Fetches and summarizes news.
+*   **Proprietary Knowledge Base**: A curated `knowledge_base.json` file serves as the agent's "Long Term Memory" for proprietary concepts (e.g., *Impact Score*, *CPR Breakout*). The agent uses the `search_knowledge_base` tool to look up these definitions dynamically, ensuring it speaks the specific language of our trading strategy.
+
+### 2. Universal Live-Learning Model
+We moved beyond static models to a **Universal Market Model**:
+*   **Architecture**: A Voting Ensemble of **XGBoost** (Gradient Boosting) and **Random Forest**.
+*   **Training Data**: Trained on a consolidated dataset of Top 20 Nifty 50 stocks, normalizing features (RSI, MACD, etc.) to learn general market behavior rather than stock-specific noise.
+*   **Live Learning**: The system supports `incremental_update`, allowing the model to "learn" from today's market data without retraining from scratch, constantly adapting to shifting market regimes.
+
+### 3. Sentiment Engine (FinBERT)
+News headlines are processed using **FinBERT** (Financial BERT), a specialized NLP model.
+*   Unlike generic sentiment analysis, FinBERT understands financial nuance (e.g., "Company files for bankruptcy" is Negative, but "Cost cutting measures" might be Positive).
+*   The **Sentiment Score** is weighted into the final **Signal Strength**, ensuring technical patterns are validated by fundamental news.
+
 ## 🚀 Getting Started
 
 Follow these instructions to set up the project locally.
