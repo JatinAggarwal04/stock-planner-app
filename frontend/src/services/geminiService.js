@@ -1,7 +1,8 @@
 //frontend/src/services/geminiService.js
 // import { v4 as uuidv4 } from 'uuid' // Removed to avoid dependency issue
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000'
+// Use VITE_API_URL for consistency across the app
+const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const generateSessionId = () => {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
