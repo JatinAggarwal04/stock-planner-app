@@ -14,8 +14,13 @@ export default function BackendStatus() {
 
   if (isError) {
     return (
-      <div className="fixed bottom-4 left-4 bg-danger-100 dark:bg-danger-900/20 border border-danger-500 text-danger-700 dark:text-danger-400 px-4 py-2 rounded-lg text-sm">
-        ⚠️ Backend Offline
+      <div className="fixed bottom-4 left-4 bg-danger-100 dark:bg-danger-900/20 border border-danger-500 text-danger-700 dark:text-danger-400 px-4 py-2 rounded-lg text-sm shadow-lg z-50">
+        <div className="font-bold flex items-center gap-2">
+          ⚠️ Backend Connection Failed
+        </div>
+        <div className="text-xs mt-1 opacity-80 font-mono">
+          Target: {api.defaults.baseURL}
+        </div>
       </div>
     )
   }
