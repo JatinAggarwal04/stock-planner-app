@@ -1,7 +1,7 @@
 //frontend/src/context/WatchlistContext.jsx
 import { create } from 'zustand'
 import { watchlistService } from '../services/watchlistService'
-
+//.
 export const useWatchlistStore = create((set, get) => ({
   watchlist: [],
   trades: {}, // Active Portfolio
