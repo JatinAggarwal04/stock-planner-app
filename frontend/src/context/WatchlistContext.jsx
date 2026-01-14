@@ -18,7 +18,7 @@ export const useWatchlistStore = create((set, get) => ({
     const trades = await watchlistService.getTrades(userId)
     set({ watchlist, trades, initialized: true })
   },
-
+//,
   addToWatchlist: async (symbol) => {
     const { userId, watchlist } = get()
     if (!userId) return
