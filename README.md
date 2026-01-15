@@ -59,6 +59,28 @@ News headlines are processed using **FinBERT** (Financial BERT), a specialized N
 *   Unlike generic sentiment analysis, FinBERT understands financial nuance (e.g., "Company files for bankruptcy" is Negative, but "Cost cutting measures" might be Positive).
 *   The **Sentiment Score** is weighted into the final **Signal Strength**, ensuring technical patterns are validated by fundamental news.
 
+## ☁️ Deployment
+
+### Option 1: Render (Frontend) & Hugging Face (Backend) **[RECOMMENDED]**
+Since the backend uses ML models requiring significant RAM, we recommend **Hugging Face Spaces** (16GB RAM Free) for the backend.
+
+#### 1. Backend (Hugging Face Spaces)
+1.  Create a new [Space on Hugging Face](https://huggingface.co/new-space).
+2.  **Name**: `trade-wise-api` (or similar).
+3.  **SDK**: Select **Docker**.
+4.  **Hardware**: `CPU Basic (2 vCPU, 16GB RAM)` - Free!
+5.  **Files**: Upload the contents of the `backend/` folder to the Space.
+    *   *Tip*: You can use `git` to push just the backend folder, or use the Web UI to drag-and-drop `Dockerfile`, `requirements.txt`, `main.py`, etc.
+6.  **Environment Variables**: In Space Settings, add:
+    *   `GOOGLE_API_KEY`: Your Gemini Key.
+    *   `HF_API_KEY`: Your Hugging Face Token (for model saving).
+
+#### 2. Frontend (Vercel)
+1.  Deploy the `frontend` folder to Vercel.
+2.  Set Environment Variable:
+    *   `VITE_API_URL`: Your Hugging Face Space URL (e.g., `https://huggingface.co/spaces/yourname/trade-wise-api` -> usually `https://yourname-trade-wise-api.hf.space`).
+    *   **Note**: Ensure there is no trailing slash.
+
 ## 🚀 Getting Started
 
 Follow these instructions to set up the project locally.
