@@ -11,7 +11,7 @@ export default function WatchlistGrid() {
   const { data: quotes, isLoading } = useQuery({
     queryKey: ['watchlist-quotes', watchlist],
     queryFn: () => stockService.getBatchQuotes(watchlist),
-    refetchInterval: 5000, // Update every 5 seconds
+    refetchInterval: 15000, // Update every 15 seconds for better performance
     enabled: watchlist.length > 0,
   })
 

@@ -1,15 +1,25 @@
 //frontend/src/App.jsx
+import { Suspense, lazy, useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 import { useWatchlistStore } from './context/WatchlistContext'
-import { useEffect } from 'react'
-import Login from './pages/Login'
-import Signup from './pages/SignUp'
-import Dashboard from './pages/Dashboard'
-import StockDetail from './pages/StockDetail'
-import Navbar from './components/layout/Navbar'
-import TestAPI from './pages/TestAPI'
 import BackendStatus from './components/BackendStatus'
+import Navbar from './components/layout/Navbar'
+
+// Lazy Load Pages
+const Login = lazy(() => import('./pages/Login'))
+const Signup = lazy(() => import('./pages/SignUp'))
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const StockDetail = lazy(() => import('./pages/StockDetail'))
+const TestAPI = lazy(() => import('./pages/TestAPI'))
+
+// Loading Component
+const PageLoader = () => (
+  <div className="flex items-center justify-center min-h-screen bg-slate-50 dark:bg-slate-950">
+    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+  </div>
+)
+
 function App() {
   const { user, loading } = useAuth()
   const { initialize } = useWatchlistStore()
@@ -22,11 +32,7 @@ function App() {
   }, [user, initialize])
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-50 dark:bg-slate-950">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-      </div>
-    )
+    return <PageLoader />
   }
 
   return (
@@ -35,42 +41,44 @@ function App() {
       {/* Backend Status Indicator (Dev only) */}
       <BackendStatus />
 
-      <Routes>
-        {/* Public Routes */}
-        <Route
-          path="/login"
-          element={user ? <Navigate to="/dashboard" /> : <Login />}
-        />
-        <Route
-          path="/signup"
-          element={user ? <Navigate to="/dashboard" /> : <Signup />}
-        />
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          {/* Public Routes */}
+          <Route
+            path="/login"
+            element={user ? <Navigate to="/dashboard" /> : <Login />}
+          />
+          <Route
+            path="/signup"
+            element={user ? <Navigate to="/dashboard" /> : <Signup />}
+          />
 
-        {/* Protected Routes */}
-        <Route
-          path="/dashboard"
-          element={user ? <Dashboard /> : <Navigate to="/login" />}
-        />
-        <Route
-          path="/stock/:symbol"
-          element={user ? <StockDetail /> : <Navigate to="/login" />}
-        />
+          {/* Protected Routes */}
+          <Route
+            path="/dashboard"
+            element={user ? <Dashboard /> : <Navigate to="/login" />}
+          />
+          <Route
+            path="/stock/:symbol"
+            element={user ? <StockDetail /> : <Navigate to="/login" />}
+          />
 
-        {/* Test Route */}
-        <Route path="/test-api" element={<TestAPI />} />
+          {/* Test Route */}
+          <Route path="/test-api" element={<TestAPI />} />
 
-        {/* Root Redirect */}
-        <Route
-          path="/"
-          element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
-        />
+          {/* Root Redirect */}
+          <Route
+            path="/"
+            element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
+          />
 
-        {/* Catch all - 404 to Dashboard/Login */}
-        <Route
-          path="*"
-          element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
-        />
-      </Routes>
+          {/* Catch all - 404 to Dashboard/Login */}
+          <Route
+            path="*"
+            element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
+          />
+        </Routes>
+      </Suspense>
     </div>
   )
 }

@@ -11,5 +11,17 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          charts: ['lightweight-charts', 'recharts'],
+          ui: ['framer-motion', 'lucide-react', 'react-hot-toast'],
+          utils: ['axios', 'date-fns', 'clsx', 'tailwind-merge']
+        }
+      }
+    }
   }
 })
