@@ -29,6 +29,9 @@ COPY --chown=user:user requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Create models directory and set permissions
+RUN mkdir -p models && chown -R user:user /app
+
 # Copy the application code
 COPY --chown=user:user . .
 

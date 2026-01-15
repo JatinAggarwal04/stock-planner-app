@@ -33,7 +33,7 @@ export default function StockDetail() {
       if (trade) {
         return stockService.getPersonalizedAnalysis(
           symbol,
-          trade.buyPrice,
+          trade.averagePrice,
           trade.quantity
         )
       }
