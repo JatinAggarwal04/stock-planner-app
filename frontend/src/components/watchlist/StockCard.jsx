@@ -1,4 +1,3 @@
-//frontend/src/components/watchlist/StockCard.jsx
 import { useNavigate } from 'react-router-dom'
 import { TrendingUp, TrendingDown, X, Volume2 } from 'lucide-react'
 import { useWatchlistStore } from '../../context/WatchlistContext'
@@ -10,17 +9,33 @@ import { motion } from 'framer-motion'
 export default function StockCard({ data }) {
   const navigate = useNavigate()
   const { removeFromWatchlist, getTrade } = useWatchlistStore()
-  
+
   const trade = getTrade(data.symbol)
   const isPositive = data.change >= 0
-  
+
   // Calculate user's P&L if they have a position
-  const userPL = trade 
-    ? {
-        value: (data.price - trade.buyPrice) * trade.quantity,
-        percentage: ((data.price - trade.buyPrice) / trade.buyPrice) * 100
-      }
-    : null
+  const calculatePL = () => {
+    if (!trade) return null
+
+    // Robustly parse numbers to prevent NaN
+    const currentPrice = Number(data.price) || 0
+    const buyPrice = Number(trade.averagePrice) || 0
+    const quantity = Number(trade.quantity) || 0
+
+    if (quantity === 0) return null
+
+    const value = (currentPrice - buyPrice) * quantity
+
+    // Prevent Division by Zero -> NaN
+    // If buy price is 0, percentage is undefined/0
+    const percentage = buyPrice === 0
+      ? 0
+      : ((currentPrice - buyPrice) / buyPrice) * 100
+
+    return { value, percentage }
+  }
+
+  const userPL = calculatePL()
 
   const handleRemove = (e) => {
     e.stopPropagation()
@@ -101,18 +116,17 @@ export default function StockCard({ data }) {
         <motion.div
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
-          className={`mb-4 p-3 rounded-lg ${
-            userPL.value >= 0 
-              ? 'bg-success-50 dark:bg-success-900/10 border border-success-200 dark:border-success-800' 
-              : 'bg-danger-50 dark:bg-danger-900/10 border border-danger-200 dark:border-danger-800'
-          }`}
+          className={`mb-4 p-3 rounded-lg ${userPL.value >= 0
+              ? 'bg-success-50 dark:bg-success-500/10 border border-success-200 dark:border-success-500/20'
+              : 'bg-danger-50 dark:bg-danger-500/10 border border-danger-200 dark:border-danger-500/20'
+            }`}
         >
           <div className="text-xs text-slate-600 dark:text-slate-400 mb-1">Your P&L</div>
           <div className={`font-semibold ${userPL.value >= 0 ? 'text-success-700 dark:text-success-400' : 'text-danger-700 dark:text-danger-400'}`}>
             {formatters.currency(userPL.value)} ({formatters.percentage(userPL.percentage)})
           </div>
           <div className="text-xs text-slate-500 dark:text-slate-500 mt-1">
-            {trade.quantity} shares @ {formatters.currency(trade.buyPrice)}
+            {trade.quantity} shares @ {formatters.currency(trade.averagePrice)}
           </div>
         </motion.div>
       )}
