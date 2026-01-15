@@ -17,9 +17,9 @@ export default defineConfig({
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom'],
-          charts: ['lightweight-charts', 'recharts'],
+          charts: ['lightweight-charts'],
           ui: ['framer-motion', 'lucide-react', 'react-hot-toast'],
-          utils: ['axios', 'date-fns', 'clsx', 'tailwind-merge']
+          utils: ['axios', 'date-fns']
         }
       }
     }
