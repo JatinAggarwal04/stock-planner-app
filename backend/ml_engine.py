@@ -3,6 +3,7 @@ import joblib
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import gc 
 from typing import List, Dict, Tuple
 from xgboost import XGBClassifier
 from sklearn.ensemble import RandomForestClassifier
@@ -126,7 +127,9 @@ class MLEngine:
         self.feature_importance = {k: float(v) for k, v in zip(feature_cols, self.xgb_model.feature_importances_)}
         
         # Save after training
+        # Save after training
         self.save_model()
+        gc.collect()
         
         return {
             'xgb_accuracy': round(xgb_acc * 100, 2),
@@ -161,7 +164,9 @@ class MLEngine:
         # For this MVP, we focus on XGBoost learning.
         
         self.save_model()
+        self.save_model()
         print("Model updated with live data.")
+        gc.collect()
 
     def predict(self, latest_data: pd.DataFrame, feature_cols: List[str]) -> Dict:
         if self.xgb_model is None:
@@ -203,6 +208,7 @@ class MLEngine:
                 self.scaler = payload["scaler"]
                 self.feature_importance = payload["importance"]
                 print("Universal Model loaded successfully.")
+                gc.collect()
                 return True
             except Exception as e:
                 print(f"Failed to load model: {e}")

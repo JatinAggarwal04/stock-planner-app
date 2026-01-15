@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import feedparser
+import gc
 from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -902,6 +903,8 @@ def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: flo
         # Determine meaningful resistance to test (using R1 from Intraday)
         r1_level = intraday_plan.get('resistance', {}).get('R1', 0)
         breakout_prob = calculate_breakout_probability(df, r1_level)
+
+        gc.collect()
 
         return convert_to_python_type({
             "symbol": symbol,
