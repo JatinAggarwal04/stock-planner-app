@@ -36,16 +36,17 @@ function App() {
       <BackendStatus />
 
       <Routes>
+        {/* Public Routes */}
         <Route
-          path="/"
+          path="/login"
           element={user ? <Navigate to="/dashboard" /> : <Login />}
         />
         <Route
           path="/signup"
           element={user ? <Navigate to="/dashboard" /> : <Signup />}
         />
-        <Route path="/test-api" element={<TestAPI />} />
 
+        {/* Protected Routes */}
         <Route
           path="/dashboard"
           element={user ? <Dashboard /> : <Navigate to="/login" />}
@@ -54,9 +55,20 @@ function App() {
           path="/stock/:symbol"
           element={user ? <StockDetail /> : <Navigate to="/login" />}
         />
+
+        {/* Test Route */}
+        <Route path="/test-api" element={<TestAPI />} />
+
+        {/* Root Redirect */}
         <Route
           path="/"
-          element={<Navigate to={user ? "/dashboard" : "/login"} />}
+          element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
+        />
+
+        {/* Catch all - 404 to Dashboard/Login */}
+        <Route
+          path="*"
+          element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
         />
       </Routes>
     </div>

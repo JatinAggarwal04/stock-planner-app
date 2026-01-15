@@ -22,7 +22,7 @@ export default function TechnicalIndicators({ data }) {
         {/* Short Term View */}
         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700">
           <div className="flex items-center justify-between mb-4">
-            <h4 className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+            <h4 className="font-semibold text-slate-700 dark:text-slate-500 flex items-center gap-2">
               <Activity className="w-4 h-4 text-primary-500" /> Short Term (Weeks)
             </h4>
             <Badge
@@ -52,7 +52,7 @@ export default function TechnicalIndicators({ data }) {
               <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">Key Drivers:</p>
               <div className="flex flex-wrap gap-2">
                 {shortTerm.reasons.map((reason, i) => (
-                  <span key={i} className="text-xs px-2 py-1 bg-white dark:bg-slate-700 rounded border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300">
+                  <span key={i} className="text-xs px-2.5 py-1 bg-indigo-50 dark:bg-indigo-500/20 rounded border border-indigo-100 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-300 font-medium">
                     {reason}
                   </span>
                 ))}
@@ -92,7 +92,7 @@ export default function TechnicalIndicators({ data }) {
               <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">Key Drivers:</p>
               <div className="flex flex-wrap gap-2">
                 {longTerm.reasons.map((reason, i) => (
-                  <span key={i} className="text-xs px-2 py-1 bg-white dark:bg-slate-700 rounded border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300">
+                  <span key={i} className="text-xs px-2.5 py-1 bg-indigo-50 dark:bg-indigo-500/20 rounded border border-indigo-100 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-300 font-medium">
                     {reason}
                   </span>
                 ))}
