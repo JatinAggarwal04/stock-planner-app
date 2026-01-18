@@ -88,39 +88,7 @@ export function AuthProvider({ children }) {
     }
   }
 
-  const signInWithApple = async () => {
-    try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'apple',
-        options: {
-          redirectTo: `${window.location.origin}/dashboard`,
-        },
-      })
 
-      if (error) throw error
-      return { data, error: null }
-    } catch (error) {
-      toast.error(error.message)
-      return { data: null, error }
-    }
-  }
-
-  const signInWithAzure = async () => {
-    try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'azure',
-        options: {
-          redirectTo: `${window.location.origin}/dashboard`,
-        },
-      })
-
-      if (error) throw error
-      return { data, error: null }
-    } catch (error) {
-      toast.error(error.message)
-      return { data: null, error }
-    }
-  }
 
   const signOut = async () => {
     try {
@@ -138,8 +106,6 @@ export function AuthProvider({ children }) {
     signUp,
     signIn,
     signInWithGoogle,
-    signInWithApple,
-    signInWithAzure,
     signOut,
   }
 
