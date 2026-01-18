@@ -35,7 +35,7 @@ export default function Signup() {
   // Apple Signup removed as per request
 
   return (
-    <div className="min-h-screen flex">
+    <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950">
       {/* Left Side - Branding */}
       <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-success-600 via-success-700 to-emerald-900 p-12 items-center justify-center relative overflow-hidden">
         <div className="absolute inset-0 opacity-10">

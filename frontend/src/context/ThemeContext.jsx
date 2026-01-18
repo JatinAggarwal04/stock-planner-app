@@ -14,7 +14,7 @@ export const useTheme = () => {
 export function ThemeProvider({ children }) {
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('theme')
-    return saved || 'light'
+    return saved || 'dark'
   })
 
   useEffect(() => {

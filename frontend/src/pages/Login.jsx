@@ -34,7 +34,7 @@ export default function Login() {
   // Apple Login removed as per request
 
   return (
-    <div className="min-h-screen flex">
+    <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950">
       {/* Left Side - Branding */}
       <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-primary-500 via-primary-600 to-primary-800 p-12 items-center justify-center relative overflow-hidden">
         {/* Animated Background */}
