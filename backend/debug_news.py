@@ -9,7 +9,7 @@ async def fetch_stock_news(symbol: str, max_items: int = 5):
         loop = asyncio.get_event_loop()
         
         import urllib.parse
-        search_query = urllib.parse.quote(f"{symbol} stock news India")
+        search_query = urllib.parse.quote(f"{symbol} stock news India when:7d")
         rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-IN&gl=IN&ceid=IN:en"
         
         print(f"Fetching URL: {rss_url}")
