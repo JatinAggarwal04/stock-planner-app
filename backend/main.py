@@ -1007,7 +1007,7 @@ def personalized_analysis(
         swing_plan = TradingPlanGenerator.calculate_swing_targets(
             df_hist, 
             base_analysis['current_price'], 
-            "Bullish" if base_analysis['recommendation']['action'] == 'BUY' else "Bearish"
+            "Bullish" if base_analysis['recommendation']['signal'] == 'BUY' else "Bearish"
         )
         long_term_plan = TradingPlanGenerator.calculate_long_term_targets(
             base_analysis['current_price'],
