@@ -1,86 +1,142 @@
 import os
-import google.generativeai as genai
-from google.generativeai.types import FunctionDeclaration, Tool
-from typing import List, Dict, Any
-import pandas as pd
-import os
-import google.generativeai as genai
-from google.generativeai.types import FunctionDeclaration, Tool
-from typing import List, Dict, Any
-import pandas as pd
-import yfinance as yf
 import json
+import logging
+from typing import List, Dict, Any, Optional
+import yfinance as yf
 from dotenv import load_dotenv
+from groq import Groq
 
-load_dotenv(override=True) # Load backend .env
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Try loading frontend .env or root .env if keys are missing
-if not os.getenv("GEMINI_API_KEY") and not os.getenv("VITE_GEMINI_API_KEY"):
-    # Try Frontend
+load_dotenv(override=True)
+
+# Try loading fallback .envs
+if not os.getenv("GROQ_API_KEY"):
     frontend_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend', '.env')
     if os.path.exists(frontend_env):
-        print(f"Loading fallback .env: {frontend_env}")
         load_dotenv(frontend_env)
-        
-    # Try Root
     root_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
     if os.path.exists(root_env):
-        print(f"Loading fallback .env: {root_env}")
         load_dotenv(root_env)
 
-# Configure API Key
-GENAI_API_KEY = os.getenv("VITE_GEMINI_API_KEY")
-if GENAI_API_KEY:
-    genai.configure(api_key=GENAI_API_KEY)
-else:
-    print("WARNING: Gemini API Key not found in environment variables!")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    logger.warning("GROQ_API_KEY not found in environment variables!")
 
 class TradeWiseAgent:
     def __init__(self):
-        self.model_name = "gemini-2.5-flash-lite"
+        self.client = Groq(api_key=GROQ_API_KEY)
+        self.model_name = "llama-3.3-70b-versatile" 
         
         # Load Knowledge Base
         self.kb = self._load_knowledge_base()
         
-        # Define Tools
-        self.tools = [
-            self.get_stock_price,
-            self.get_technical_analysis,
-            self.get_trading_plan,
-            self.get_news_analysis,
-            self.search_knowledge_base
+        # Define Tools Schema (OpenAI Compatible)
+        self.tools_schema = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_stock_price",
+                    "description": "Get the current live price and today's change for a given stock symbol.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "The stock symbol (e.g., RELIANCE.NS, TATAMOTORS.NS)."}
+                        },
+                        "required": ["symbol"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_technical_analysis",
+                    "description": "Get comprehensive technical analysis (RSI, Moving Averages, Signals, Trend) for a stock.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "The stock symbol to analyze."}
+                        },
+                        "required": ["symbol"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_trading_plan",
+                    "description": "Get the quantitative trading plan including Intraday Pivots, Swing Targets, and Long Term forecasts.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "The stock symbol to get the plan for."}
+                        },
+                        "required": ["symbol"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_news_analysis",
+                    "description": "Get latest news headlines and AI sentiment analysis (Bullish/Bearish) for a stock.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "The stock symbol to analyze."}
+                        },
+                        "required": ["symbol"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_knowledge_base",
+                    "description": "Search the proprietary knowledge base for definitions of financial terms or proprietary metrics.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The term to search for (e.g., 'CPR', 'Impact Score')."}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
         ]
         
-        # Initialize Model with Tools
-        self.model = genai.GenerativeModel(
-            model_name=self.model_name,
-            tools=self.tools,
-            system_instruction="""You are TradeWise AI, an advanced financial agent.
-            
-            Your Capability:
-            1. You have DIRECT ACCESS to real-time market data, technical analysis, and NEWS via tools.
-            2. You have a Knowledge Base for explaining proprietary indicators (Impact Score, Swing Targets).
-            
-            Protocol:
-            - FORMATTING: Use Markdown for all responses.
-              - Use `###` for section headers.
-              - Use **Tables** for Price Levels, Targets, and Stops.
-              - Use **Bold** for signal/action (e.g., **BUY**, **EXIT**).
-              - Use bullet points for lists.
-            - ALWAYS use the `get_stock_price` tool if a user asks for current price.
-            - ALWAYS use `get_technical_analysis` or `get_trading_plan` for analysis questions.
-            - ALWAYS use `get_news_analysis` if asked about "News", "Sentiment", or "Events".
-            - ALWAYS use `search_knowledge_base` if asked "What is <Term>?" or "How is <Metric> calculated?".
-            - RISK MANAGEMENT: If technical stop is too deep (>7%), recommend the '7% Capital Protection Rule' or '5% Conservative Stop'.
-            - Do NOT hallucinate data. If a tool fails, admit it.
-            - Provide concise, actionable answers.
-            
-            Disclaimer: Always state "This is not financial advice."
-            """
-        )
+        # Tool Implementation Map
+        self.available_tools = {
+            "get_stock_price": self.get_stock_price,
+            "get_technical_analysis": self.get_technical_analysis,
+            "get_trading_plan": self.get_trading_plan,
+            "get_news_analysis": self.get_news_analysis,
+            "search_knowledge_base": self.search_knowledge_base
+        }
         
-        # Active Chats (In-memory for now, can move to Redis/DB later)
-        self.chats = {} 
+        # System Prompt
+        self.system_prompt = """You are TradeWise AI, an advanced financial agent.
+        
+        Your Capabilities:
+        1. Access real-time market data, technical analysis, and NEWS via tools.
+        2. Explain proprietary indicators from your Knowledge Base.
+        
+        Protocol:
+        - FORMATTING: Use Markdown. `###` for headers. **Tables** for data. **Bold** for signals.
+        - ALWAYS use `get_stock_price` for current price queries.
+        - ALWAYS use `get_technical_analysis` or `get_trading_plan` for analysis.
+        - ALWAYS use `search_knowledge_base` for questions about terms like "CPR", "Impact Score", "Swing Targets".
+        - RISK: If stops are deep (>7%), recommend 'Capital Protection Rule'.
+        - Do NOT hallucinate data.
+        
+        Disclaimer: State "This is not financial advice."
+        """
+        
+        # Chat History (Simple limitation: 1 turn memory for now to save tokens/simplify)
+        # In a real app, you'd store this in a DB or Redis.
+        self.history = {}
 
     def _load_knowledge_base(self):
         try:
@@ -89,166 +145,135 @@ class TradeWiseAgent:
         except FileNotFoundError:
             return {}
 
-    # --- Tool Implementations (with Docstrings for Auto-Schema) ---
-
+    # --- Tool Implementations ---
     def get_stock_price(self, symbol: str):
-        """
-        Get the current live price and today's change for a given stock symbol.
-        
-        Args:
-            symbol: The stock symbol (e.g., RELIANCE.NS, TATAMOTORS.NS).
-        """
         try:
             ticker = yf.Ticker(symbol)
             data = ticker.history(period='1d')
-            if data.empty:
-                return {"error": "Stock data not found"}
+            if data.empty: return json.dumps({"error": "Stock data not found"})
             
-            current = data['Close'].iloc[-1]
-            open_price = data['Open'].iloc[-1]
-            change = current - open_price
-            pct_change = (change / open_price) * 100
-            
-            return {
+            row = data.iloc[-1]
+            return json.dumps({
                 "symbol": symbol,
-                "current_price": round(current, 2),
-                "change": round(change, 2),
-                "change_pct": round(pct_change, 2)
-            }
+                "price": round(row['Close'], 2),
+                "change": round(row['Close'] - row['Open'], 2),
+                "pct_change": round(((row['Close'] - row['Open']) / row['Open']) * 100, 2)
+            })
         except Exception as e:
-            return {"error": str(e)}
+            return json.dumps({"error": str(e)})
 
     def get_technical_analysis(self, symbol: str):
-        """
-        Get comprehensive technical analysis (RSI, Moving Averages, Signals, Trend) for a stock.
-        
-        Args:
-            symbol: The stock symbol to analyze.
-        """
         try:
-            # Local import to avoid circular dependency
             from main import analyze_stock
-            
-            # Using default parameters for analysis
             analysis = analyze_stock(symbol)
-            # Filter/Summarize large response for the LLM context if needed
-            # For now sending full dict but LLM might get overwhelmed. 
-            # Ideally we pick key fields.
-            return {
+            # Minify for context window
+            summary = {
                 "signal": analysis.get("recommendation", {}).get("signal"),
-                "rsi": analysis.get("technical_indicators", {}).get("rsi"),
-                "trend": analysis.get("trend"),
-                "support_resistance": analysis.get("support_resistance")
+                "rsi": analysis.get("technical_analysis", {}).get("rsi"),
+                "trend": analysis.get("technical_analysis", {}).get("trend"),
+                "support": analysis.get("support_resistance", {}).get("nearest_support"),
+                "resistance": analysis.get("support_resistance", {}).get("nearest_resistance")
             }
+            return json.dumps(summary)
         except Exception as e:
-            return {"error": str(e)}
+            return json.dumps({"error": str(e)})
 
     def get_trading_plan(self, symbol: str):
-        """
-        Get the quantitative trading plan including Intraday Pivots, Swing Targets, and Long Term forecasts.
-        
-        Args:
-            symbol: The stock symbol to get the plan for.
-        """
         try:
             from main import analyze_stock
             analysis = analyze_stock(symbol)
-            if "trading_plan" in analysis:
-                return analysis["trading_plan"]
-            return {"error": "No trading plan generated"}
+            return json.dumps(analysis.get("trading_plan", {"error": "No plan"}))
         except Exception as e:
-            return {"error": str(e)}
-
+            return json.dumps({"error": str(e)})
+            
     def get_news_analysis(self, symbol: str):
-        """
-        Get latest news headlines and AI sentiment analysis (Bullish/Bearish) for a stock.
-        
-        Args:
-            symbol: The stock symbol to analyze (e.g., RELIANCE.NS).
-        """
         try:
             from main import fetch_stock_news
-            
-            # Fetch news
             data = fetch_stock_news(symbol)
             news = data.get('news', [])
-            sentiment = data.get('sentiment', {})
-            
-            # Summarize for Agent
-            headlines = [f"- {n['title']}" for n in news[:3]]
-            summary = {
-                "sentiment_label": sentiment.get('sentiment', 'Neutral'),
-                "sentiment_score": sentiment.get('score', 0),
-                "top_headlines": headlines
-            }
-            return summary
+            headlines = [n['title'] for n in news[:3]]
+            return json.dumps({
+                "sentiment": data.get('sentiment', {}).get('sentiment', 'Neutral'),
+                "headlines": headlines
+            })
         except Exception as e:
-            return {"error": f"Failed to fetch news: {str(e)}"}
+            return json.dumps({"error": str(e)})
 
     def search_knowledge_base(self, query: str):
-        """
-        Search the proprietary knowledge base for definitions of financial terms or calculation methods used in this app.
-        
-        Args:
-            query: The term or concept to search for (e.g., 'CPR', 'Swing Target', 'Impact Score').
-        """
-        # Simple keyword matching for retrieval
         query = query.lower()
-        results = []
-        for key, value in self.kb.items():
-            if query in key.lower() or query in value.lower():
-                results.append(f"{key}: {value}")
-        
-        if not results:
-            return "No specific definition found in knowledge base. Answer with general knowledge."
-        
-        return "\n".join(results[:3]) # Return top 3 matches
+        results = [f"{k}: {v}" for k, v in self.kb.items() if query in k.lower() or query in v.lower()]
+        return "\n".join(results[:3]) if results else "No definition found."
 
-
-    # --- Chat Interface ---
-
+    # --- Chat Logic ---
     async def chat(self, user_id: str, message: str, context: Dict = None):
-        if user_id not in self.chats:
-            self.chats[user_id] = self.model.start_chat(enable_automatic_function_calling=True)
+        messages = [
+            {"role": "system", "content": self.system_prompt}
+        ]
         
-        chat_session = self.chats[user_id]
-        
-        # Inject Context if provided
-        final_message = message
+        # Inject Context into System Prompt or First User Message
         if context and "symbol" in context:
-            # Format context into a prompt preamble
-            context_str = f"""
-[SYSTEM CONTEXT]
-Active Stock: {context.get('symbol')}
-Price: {context.get('current_price')}
-Position: {'YES' if context.get('has_position') else 'NO'}
-Avg Price: {context.get('buy_price')}
-Qty: {context.get('quantity')}
-Technical Signal: {context.get('signal')}
-"""
-            # Add Personality/Action context
+            ctx_msg = f"""
+            Active Stock: {context.get('symbol')}
+            Price: {context.get('current_price')}
+            Position: {'YES' if context.get('has_position') else 'NO'}
+            User Avg: {context.get('buy_price')}
+            """
             if context.get('personalized_recommendation'):
                  rec = context.get('personalized_recommendation')
-                 user_stops = rec.get('user_stops', {})
-                 context_str += f"""
-RISK ALERT: {rec.get('risk_alert')}
-RECOMMENDED ACTION: {rec.get('recommendation', {}).get('action')}
-ADVICE: {rec.get('recommendation', {}).get('message')}
-USER SPECIFIC STOPS (Based on Buy Price):
-- Capital Protection (7%): {user_stops.get('capital_protection_7pct')}
-- Conservative (5%): {user_stops.get('conservative_5pct')}
-- Aggressive (10%): {user_stops.get('aggressive_10pct')}
-"""
-            context_str += "[/SYSTEM CONTEXT]\nUser Question: "
-            final_message = context_str + message
+                 ctx_msg += f"\nRisk Alert: {rec.get('risk_alert')}\nRec Action: {rec.get('recommendation', {}).get('action')}"
             
-        # Send message with automatic tool handling
-        try:
-            response = await chat_session.send_message_async(final_message)
-            return response.text
-        except Exception as e:
-            # Handle potential model errors (quota, block, etc.)
-            return f"I encountered an error: {str(e)}"
+            messages.append({"role": "system", "content": f"Context Data:\n{ctx_msg}"})
 
-# Singleton Instance
+        # Add User Message
+        messages.append({"role": "user", "content": message})
+        
+        try:
+            # 1. Initial Call
+            completion = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                tools=self.tools_schema,
+                tool_choice="auto",
+                max_tokens=1024
+            )
+            
+            response_message = completion.choices[0].message
+            tool_calls = response_message.tool_calls
+            
+            # 2. Handle Tool Calls
+            if tool_calls:
+                messages.append(response_message) # Extend conversation with assistant's tool request
+                
+                for tool_call in tool_calls:
+                    function_name = tool_call.function.name
+                    function_to_call = self.available_tools.get(function_name)
+                    function_args = json.loads(tool_call.function.arguments)
+                    
+                    logger.info(f"Invoking Tool: {function_name} with {function_args}")
+                    
+                    if function_to_call:
+                        function_response = function_to_call(**function_args)
+                        
+                        messages.append(
+                            {
+                                "tool_call_id": tool_call.id,
+                                "role": "tool",
+                                "name": function_name,
+                                "content": str(function_response),
+                            }
+                        )
+                
+                # 3. Final Response with Tool Outputs
+                second_response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages
+                )
+                return second_response.choices[0].message.content
+            
+            return response_message.content
+
+        except Exception as e:
+            logger.error(f"Groq Chat Error: {e}")
+            return f"Error: {str(e)}. Please check your API usage or key."
+
 agent = TradeWiseAgent()
