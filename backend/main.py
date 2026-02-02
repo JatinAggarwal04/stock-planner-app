@@ -757,7 +757,8 @@ async def fetch_stock_news(symbol: str, max_items: int = 5):
         
         # Determine company name (Blocking, so run in executor or just use symbol for speed)
         # Using symbol for search is faster and safer for generic searches
-        search_query = f"{symbol} stock news India" 
+        import urllib.parse
+        search_query = urllib.parse.quote(f"{symbol} stock news India")
         rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-IN&gl=IN&ceid=IN:en"
         
         # Async Feed Fetch using Executor
