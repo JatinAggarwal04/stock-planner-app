@@ -10,10 +10,14 @@ from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
+from huggingface_hub import AsyncInferenceClient
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import warnings
+import asyncio
+import functools
+from async_lru import alru_cache
+from concurrent.futures import ThreadPoolExecutor
 from scipy.signal import argrelextrema
 from advanced_analytics import calculate_pressure_index, calculate_breakout_probability
 from ml_engine import MLEngine, TOP_NIFTY_STOCKS
@@ -71,13 +75,15 @@ def convert_to_python_type(obj):
     return obj
 
 # ==================== SENTIMENT ENGINE ====================
+# ==================== SENTIMENT ENGINE ====================
 class SentimentAnalyzer:
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.client = InferenceClient(token=api_key) if api_key else None
+        # Use Async client
+        self.client = AsyncInferenceClient(token=api_key) if api_key else None
     
-    def analyze_finbert(self, text_list: List[str]) -> Dict:
-        """Enhanced FinBERT with confidence tracking"""
+    async def analyze_finbert(self, text_list: List[str]) -> Dict:
+        """Enhanced FinBERT with confidence tracking (Async)"""
         if not text_list or not self.client:
             return {
                 "score": 0.0,
@@ -91,9 +97,11 @@ class SentimentAnalyzer:
             confidences = []
             breakdown = {"positive": 0, "negative": 0, "neutral": 0}
             
+            # Process only top 5 headlines
             for text in text_list[:5]:
                 try:
-                    result = self.client.text_classification(
+                    # Async Inference Call
+                    result = await self.client.text_classification(
                         text=text,
                         model="ProsusAI/finbert"
                     )
@@ -741,28 +749,29 @@ def root():
         "examples": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS"]
     }
 
-def fetch_stock_news(symbol: str, max_items: int = 5):
-    """Fetches latest news and performs sentiment analysis."""
+@alru_cache(maxsize=100, ttl=3600)  # Cache for 1 hour
+async def fetch_stock_news(symbol: str, max_items: int = 5):
+    """Fetches latest news and performs sentiment analysis (Async + Cached)."""
     try:
-        # Get Company Name from Ticker
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        company_name = info.get('longName', symbol).replace('Limited', '').replace('Ltd', '').strip()
+        loop = asyncio.get_event_loop()
         
-        # Search Google News RSS
-        encoded_name = company_name.replace(" ", "+")
-        rss_url = f"https://news.google.com/rss/search?q={encoded_name}+stock&hl=en-IN&gl=IN&ceid=IN:en"
+        # Determine company name (Blocking, so run in executor or just use symbol for speed)
+        # Using symbol for search is faster and safer for generic searches
+        search_query = f"{symbol} stock news India" 
+        rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-IN&gl=IN&ceid=IN:en"
         
-        feed = feedparser.parse(rss_url)
+        # Async Feed Fetch using Executor
+        feed = await loop.run_in_executor(None, feedparser.parse, rss_url)
+        
         news = [{"title": x.title, "link": x.link, "published": x.published} for x in feed.entries[:max_items]]
         headlines = [x['title'] for x in news]
         
         if not headlines:
              return {"news": [], "sentiment": {"score": 0, "sentiment": "Neutral", "label": "Neutral"}}
 
-        # Sentiment Analysis
+        # Sentiment Analysis (Async)
         sentiment_analyzer = SentimentAnalyzer(HF_API_KEY)
-        sentiment = sentiment_analyzer.analyze_finbert(headlines)
+        sentiment = await sentiment_analyzer.analyze_finbert(headlines)
         
         return {
             "news": news,
@@ -773,21 +782,37 @@ def fetch_stock_news(symbol: str, max_items: int = 5):
         return {"news": [], "sentiment": {"score": 0, "sentiment": "Neutral", "label": "Neutral"}}
 
 @app.get("/analyze/{symbol}")
-def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: float = 2.0):
+async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: float = 2.0):
     """Hybrid Analysis: ML for Short Term, Rules for Long Term + Sentiment"""
     
     try:
         if not symbol.endswith('.NS') and not symbol.endswith('.BO'):
             symbol = f"{symbol}.NS"
         
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        df = ticker.history(period="2y")
+        loop = asyncio.get_event_loop()
+        
+        # PARALLEL EXECUTION: Fetch History & News concurrently
+        async def fetch_history():
+            ticker = yf.Ticker(symbol)
+            # Run heavy pandas/network op in thread pool
+            return await loop.run_in_executor(None, lambda: ticker.history(period="2y"))
+
+        async def fetch_info():
+             ticker = yf.Ticker(symbol)
+             return await loop.run_in_executor(None, lambda: ticker.info)
+
+        # Execute parallel tasks
+        df_task = fetch_history()
+        info_task = fetch_info()
+        news_task = fetch_stock_news(symbol)
+        
+        # Wait for all
+        df, info, news_data = await asyncio.gather(df_task, info_task, news_task)
         
         if df.empty or len(df) < 200:
             raise HTTPException(status_code=404, detail="Insufficient data")
         
-        # Feature Engineering 
+        # Feature Engineering (CPU Bound - fast enough for main thread usually, but safe to offload if needed)
         feature_engine = FeatureEngine()
         df = feature_engine.calculate_technical_features(df)
         df = feature_engine.calculate_alpha_features(df)
@@ -835,7 +860,6 @@ def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: flo
         
         # 3. Sentiment Analysis
         # 3. Sentiment Analysis (Refactored)
-        news_data = fetch_stock_news(symbol)
         news = news_data['news']
         sentiment = news_data['sentiment']
         
@@ -985,7 +1009,7 @@ def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: flo
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/analyze/{symbol}/personalized")
-def personalized_analysis(
+async def personalized_analysis(
     symbol: str,
     buy_price: float,
     quantity: int,
@@ -996,11 +1020,12 @@ def personalized_analysis(
     
     try:
         # Get base analysis
-        base_analysis = analyze_stock(symbol, account_size, risk_per_trade)
+        base_analysis = await analyze_stock(symbol, account_size, risk_per_trade)
         
         # Need historical data for Trading Plan
+        loop = asyncio.get_event_loop()
         stock = yf.Ticker(symbol)
-        df_hist = stock.history(period="1y")
+        df_hist = await loop.run_in_executor(None, lambda: stock.history(period="1y"))
         
         # Calculate Trading Plans
         intraday_plan = TradingPlanGenerator.calculate_intraday_levels(df_hist)
