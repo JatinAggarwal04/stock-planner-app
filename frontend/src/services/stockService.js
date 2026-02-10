@@ -33,7 +33,11 @@ export const stockService = {
       return response.data
     } catch (error) {
       console.error('getPersonalizedAnalysis error:', error)
-      // Fallback to standard analysis if personalized fails
+      // Don't fallback on rate-limit (429) errors — it would just make things worse
+      if (error?.response?.status === 429) {
+        throw error
+      }
+      // Fallback to standard analysis for other errors
       console.log('Falling back to standard analysis')
       return await this.analyzeStock(symbol, accountSize, riskPerTrade)
     }

@@ -36,6 +36,15 @@ from sklearn.preprocessing import StandardScaler
 
 load_dotenv()
 
+# Fix yfinance TzCache warning on restricted filesystems
+try:
+    import os as _os
+    _tz_cache_dir = "/tmp/yf-tz-cache"
+    _os.makedirs(_tz_cache_dir, exist_ok=True)
+    yf.set_tz_cache_location(_tz_cache_dir)
+except Exception:
+    pass
+
 app = FastAPI(
     title="TradeWise - Indian Stock Market AI Platform",
     version="3.0",
@@ -97,14 +106,29 @@ class SentimentAnalyzer:
             confidences = []
             breakdown = {"positive": 0, "negative": 0, "neutral": 0}
             
-            # Process only top 5 headlines
+            # Process only top 5 headlines with retry logic
             for text in text_list[:5]:
                 try:
-                    # Async Inference Call
-                    result = await self.client.text_classification(
-                        text=text,
-                        model="ProsusAI/finbert"
-                    )
+                    # Async Inference Call with exponential backoff
+                    result = None
+                    for attempt in range(3):
+                        try:
+                            result = await self.client.text_classification(
+                                text=text,
+                                model="ProsusAI/finbert"
+                            )
+                            break  # Success, exit retry loop
+                        except Exception as retry_err:
+                            err_str = str(retry_err).lower()
+                            if "rate" in err_str or "429" in err_str or "too many" in err_str:
+                                wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
+                                print(f"HuggingFace rate limited (attempt {attempt+1}/3), waiting {wait_time}s...")
+                                await asyncio.sleep(wait_time)
+                            else:
+                                raise  # Non-rate-limit error, don't retry
+                    
+                    if result is None:
+                        continue  # All retries exhausted for this headline
                     
                     headline_score = 0.0
                     max_confidence = 0.0
@@ -782,6 +806,10 @@ async def fetch_stock_news(symbol: str, max_items: int = 5):
         print(f"News fetch error: {e}")
         return {"news": [], "sentiment": {"score": 0, "sentiment": "Neutral", "label": "Neutral"}}
 
+# In-memory cache for analyze_stock results (5-minute TTL)
+_analysis_cache = {}
+_ANALYSIS_CACHE_TTL = 300  # seconds
+
 @app.get("/analyze/{symbol}")
 async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: float = 2.0):
     """Hybrid Analysis: ML for Short Term, Rules for Long Term + Sentiment"""
@@ -789,6 +817,16 @@ async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trad
     try:
         if not symbol.endswith('.NS') and not symbol.endswith('.BO'):
             symbol = f"{symbol}.NS"
+        
+        # Check cache first
+        cache_key = f"{symbol}:{account_size}:{risk_per_trade}"
+        cached = _analysis_cache.get(cache_key)
+        if cached:
+            cached_time, cached_result = cached
+            if (datetime.now() - cached_time).total_seconds() < _ANALYSIS_CACHE_TTL:
+                return cached_result
+            else:
+                del _analysis_cache[cache_key]
         
         loop = asyncio.get_event_loop()
         
@@ -931,7 +969,7 @@ async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trad
 
         gc.collect()
 
-        return convert_to_python_type({
+        response_data_raw = {
             "symbol": symbol,
             "company_name": info.get('longName', symbol),
             "current_price": round(current_price, 2),
@@ -1003,10 +1041,25 @@ async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trad
                 "market_cap": info.get('marketCap', 0),
                 "pe_ratio": round(info.get('trailingPE', 0), 2)
             }
-        })
+        }
+
+        response_data = convert_to_python_type(response_data_raw)
+
+        # Store in cache
+        _analysis_cache[cache_key] = (datetime.now(), response_data)
+        
+        # Evict old cache entries (keep max 50)
+        if len(_analysis_cache) > 50:
+            oldest_key = min(_analysis_cache, key=lambda k: _analysis_cache[k][0])
+            del _analysis_cache[oldest_key]
+        
+        return response_data
 
     except Exception as e:
         print(f"Analysis Error: {e}")
+        err_str = str(e).lower()
+        if "rate" in err_str or "429" in err_str or "too many" in err_str:
+            raise HTTPException(status_code=429, detail="Rate limited. Please try again in a few minutes.")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/analyze/{symbol}/personalized")
@@ -1020,32 +1073,11 @@ async def personalized_analysis(
     """Personalized analysis based on user's position"""
     
     try:
-        # Get base analysis
+        # Get base analysis (uses cached result if available)
         base_analysis = await analyze_stock(symbol, account_size, risk_per_trade)
         
-        # Need historical data for Trading Plan
-        loop = asyncio.get_event_loop()
-        stock = yf.Ticker(symbol)
-        df_hist = await loop.run_in_executor(None, lambda: stock.history(period="1y"))
-        
-        # Calculate Trading Plans
-        intraday_plan = TradingPlanGenerator.calculate_intraday_levels(df_hist)
-        swing_plan = TradingPlanGenerator.calculate_swing_targets(
-            df_hist, 
-            base_analysis['current_price'], 
-            "Bullish" if base_analysis['recommendation']['signal'] == 'BUY' else "Bearish"
-        )
-        long_term_plan = TradingPlanGenerator.calculate_long_term_targets(
-            base_analysis['current_price'],
-            base_analysis['risk_metrics']['volatility_annual'],
-            df_hist  # Pass df for monthly pivots
-        )
-        
-        trading_plan = {
-            "intraday": intraday_plan,
-            "swing": swing_plan,
-            "long_term": long_term_plan
-        }
+        # Reuse trading_plan from base_analysis instead of making another yfinance call
+        trading_plan = base_analysis.get('trading_plan', {})
         
         current_price = base_analysis['current_price']
         stop_loss = base_analysis['trade_setup']['stop_loss']
@@ -1062,8 +1094,13 @@ async def personalized_analysis(
         
         return convert_to_python_type(base_analysis)
         
+    except HTTPException:
+        raise  # Re-raise HTTPExceptions (including 429s) as-is
     except Exception as e:
         print(f"Personalized Analysis Error: {e}")
+        err_str = str(e).lower()
+        if "rate" in err_str or "429" in err_str or "too many" in err_str:
+            raise HTTPException(status_code=429, detail="Rate limited. Please try again in a few minutes.")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/search")
