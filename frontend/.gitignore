@@ -1,24 +1,94 @@
-# Logs
-logs
-*.log
+# =================================================
+# Python / Flask Backend
+# =================================================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Flask
+instance/
+.webassets-cache
+*.db
+*.sqlite
+*.sqlite3
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# mypy
+.mypy_cache/
+
+# =================================================
+# Node / Frontend
+# =================================================
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+.next/
+dist/
+build/
+out/
+coverage/
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# TypeScript
+*.tsbuildinfo
+
+# =================================================
+# Environment secrets
+# =================================================
+.env
+.env.*
+!.env.example
+
+# =================================================
+# Logs
+# =================================================
+logs/
+*.log
+
+# =================================================
+# IDE / Editors
+# =================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =================================================
+# OS junk
+# =================================================
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+Thumbs.db
+Desktop.ini
+
+# =================================================
+# Docker (optional)
+# =================================================
+docker-compose.override.yml
+
+# =================================================
+# Misc cache
+# =================================================
+.cache/
+.tmp/
+.temp/
+.eslintcache
