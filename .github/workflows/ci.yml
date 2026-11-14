@@ -47,3 +47,24 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  deploy-backend:
+    # Only after tests and the image smoke test pass, and only for pushes to main
+    needs: [backend, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: deploy-backend
+    steps:
+      - uses: actions/checkout@v7
+      - name: Deploy backend to the Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REMOTE: https://Jatin04:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/Jatin04/TradeWise
+          DEPLOY_MESSAGE: "Deploy ${{ github.sha }} from GitHub Actions"
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN secret is not set"; exit 1
+          fi
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          ./deploy_to_hf.sh
