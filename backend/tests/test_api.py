@@ -139,6 +139,27 @@ def test_admin_rejects_concurrent_training(client, admin_headers):
         main._training_lock.release()
 
 
+@pytest.mark.parametrize("has_model, expected_runs", [(False, 3), (True, 2)])
+def test_model_scheduler_trains_on_start_and_weekly(monkeypatch, has_model, expected_runs):
+    runs, sleeps = [], []
+
+    class Engine:
+        xgb_model = object() if has_model else None
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) > 2:
+            raise StopIteration  # end the infinite loop after two weekly cycles
+
+    monkeypatch.setattr(main, "ml_engine", Engine())
+    monkeypatch.setattr(main, "train_universal_model_job", lambda: runs.append(1))
+    monkeypatch.setattr(main.time, "sleep", fake_sleep)
+    with pytest.raises(StopIteration):
+        main._model_scheduler()
+    assert len(runs) == expected_runs
+    assert sleeps[0] == 7 * 24 * 3600
+
+
 def test_push_model_needs_hf_token(client, admin_headers):
     response = client.post("/admin/push-model", params={"repo_id": "a/b"}, headers=admin_headers)
     assert response.status_code == 400

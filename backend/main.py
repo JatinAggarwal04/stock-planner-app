@@ -418,11 +418,19 @@ def train_universal_model_job():
     finally:
         _training_lock.release()
 
-@app.on_event("startup")
-def ensure_model():
-    # A fresh deploy has no model file: train the universal model once in the background
+MODEL_RETRAIN_INTERVAL = 7 * 24 * 3600  # weekly, in seconds
+
+def _model_scheduler():
+    """Train once if there's no model (fresh deploy), then retrain weekly."""
     if ml_engine.xgb_model is None:
-        threading.Thread(target=train_universal_model_job, daemon=True).start()
+        train_universal_model_job()
+    while True:
+        time.sleep(MODEL_RETRAIN_INTERVAL)
+        train_universal_model_job()
+
+@app.on_event("startup")
+def start_model_scheduler():
+    threading.Thread(target=_model_scheduler, daemon=True).start()
 
 # ==================== RISK MANAGER ====================
 class RiskManager:
