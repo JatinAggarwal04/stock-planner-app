@@ -5,11 +5,9 @@ export const stockService = {
   // Get full analysis
   async analyzeStock(symbol, accountSize = 100000, riskPerTrade = 2) {
     try {
-      console.log(`Calling API: /analyze/${symbol}`)
       const response = await api.get(`/analyze/${symbol}`, {
         params: { account_size: accountSize, risk_per_trade: riskPerTrade },
       })
-      console.log('API Response:', response.data)
       return response.data
     } catch (error) {
       console.error('analyzeStock error:', error)
@@ -20,7 +18,6 @@ export const stockService = {
   // Get personalized analysis
   async getPersonalizedAnalysis(symbol, buyPrice, quantity, accountSize = 100000, riskPerTrade = 2) {
     try {
-      console.log(`Calling API: /analyze/${symbol}/personalized`)
       const response = await api.get(`/analyze/${symbol}/personalized`, {
         params: {
           buy_price: buyPrice,
@@ -29,7 +26,6 @@ export const stockService = {
           risk_per_trade: riskPerTrade,
         },
       })
-      console.log('Personalized API Response:', response.data)
       return response.data
     } catch (error) {
       console.error('getPersonalizedAnalysis error:', error)
@@ -38,7 +34,6 @@ export const stockService = {
         throw error
       }
       // Fallback to standard analysis for other errors
-      console.log('Falling back to standard analysis')
       return await this.analyzeStock(symbol, accountSize, riskPerTrade)
     }
   },
