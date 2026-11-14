@@ -139,25 +139,25 @@ def test_admin_rejects_concurrent_training(client, admin_headers):
         main._training_lock.release()
 
 
-@pytest.mark.parametrize("has_model, expected_runs", [(False, 3), (True, 2)])
-def test_model_scheduler_trains_on_start_and_weekly(monkeypatch, has_model, expected_runs):
-    runs, sleeps = [], []
+@pytest.mark.parametrize("has_model, expected_runs", [(False, 1), (True, 0)])
+def test_startup_trains_only_when_model_missing(monkeypatch, has_model, expected_runs):
+    runs = []
 
     class Engine:
         xgb_model = object() if has_model else None
 
-    def fake_sleep(seconds):
-        sleeps.append(seconds)
-        if len(sleeps) > 2:
-            raise StopIteration  # end the infinite loop after two weekly cycles
+    class InlineThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
 
     monkeypatch.setattr(main, "ml_engine", Engine())
     monkeypatch.setattr(main, "train_universal_model_job", lambda: runs.append(1))
-    monkeypatch.setattr(main.time, "sleep", fake_sleep)
-    with pytest.raises(StopIteration):
-        main._model_scheduler()
+    monkeypatch.setattr(main.threading, "Thread", InlineThread)
+    main.ensure_model()
     assert len(runs) == expected_runs
-    assert sleeps[0] == 7 * 24 * 3600
 
 
 def test_push_model_needs_hf_token(client, admin_headers):

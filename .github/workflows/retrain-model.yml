@@ -1,0 +1,32 @@
+name: Retrain model
+
+on:
+  schedule:
+    - cron: "30 20 * * 6"  # Saturday 20:30 UTC = Sunday 02:00 IST
+  workflow_dispatch:
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger universal model training
+        env:
+          ADMIN_KEY: ${{ secrets.ADMIN_KEY }}
+          URL: https://jatin04-tradewise.hf.space/admin/train-universal
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "ADMIN_KEY secret is not set"; exit 1
+          fi
+          # A sleeping Space returns 502/503 while it wakes up, so retry for up to ~10 minutes
+          for attempt in $(seq 1 20); do
+            status=$(curl -s -o response.txt -w "%{http_code}" --max-time 60 \
+              -X POST -H "X-Admin-Key: $ADMIN_KEY" "$URL" || echo 000)
+            echo "Attempt $attempt: HTTP $status $(cat response.txt 2>/dev/null)"
+            case "$status" in
+              200) echo "Training started"; exit 0 ;;
+              409) echo "Training already in progress"; exit 0 ;;
+              403) echo "Rejected: ADMIN_KEY in GitHub doesn't match the Space"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "Space did not respond in time"; exit 1
