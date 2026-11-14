@@ -274,6 +274,6 @@ class TradeWiseAgent:
 
         except Exception as e:
             logger.error(f"Groq Chat Error: {e}")
-            return f"Error: {str(e)}. Please check your API usage or key."
+            return "Sorry, the assistant is unavailable right now. Please try again later."
 
 agent = TradeWiseAgent()

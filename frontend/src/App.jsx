@@ -11,7 +11,6 @@ const Login = lazy(() => import('./pages/Login'))
 const Signup = lazy(() => import('./pages/SignUp'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const StockDetail = lazy(() => import('./pages/StockDetail'))
-const TestAPI = lazy(() => import('./pages/TestAPI'))
 
 // Loading Component
 const PageLoader = () => (
@@ -62,9 +61,6 @@ function App() {
             path="/stock/:symbol"
             element={user ? <StockDetail /> : <Navigate to="/login" />}
           />
-
-          {/* Test Route */}
-          <Route path="/test-api" element={<TestAPI />} />
 
           {/* Root Redirect */}
           <Route

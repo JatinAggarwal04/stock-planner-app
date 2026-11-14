@@ -6,7 +6,7 @@ import pandas as pd
 import yfinance as yf
 import feedparser
 import gc
-from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -16,6 +16,9 @@ from typing import Dict, List, Optional
 import warnings
 import asyncio
 import functools
+import hmac
+import time
+from collections import defaultdict, deque
 from async_lru import alru_cache
 from concurrent.futures import ThreadPoolExecutor
 from scipy.signal import argrelextrema
@@ -64,6 +67,27 @@ security = HTTPBearer()
 
 # Configuration
 HF_API_KEY = os.getenv("HF_API_KEY")
+ADMIN_KEY = os.getenv("ADMIN_KEY")
+CHAT_RATE_LIMIT = 10  # requests per window per IP
+CHAT_RATE_WINDOW = 60  # seconds
+_chat_requests = defaultdict(deque)
+
+def require_admin(x_admin_key: Optional[str] = Header(None)):
+    """Reject admin calls unless X-Admin-Key matches ADMIN_KEY. Fails closed if ADMIN_KEY is unset."""
+    if not ADMIN_KEY or not x_admin_key or not hmac.compare_digest(x_admin_key, ADMIN_KEY):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+def chat_rate_limit(request: Request):
+    """Simple in-memory sliding-window limit per client IP."""
+    forwarded = request.headers.get("x-forwarded-for")
+    ip = forwarded.split(",")[0].strip() if forwarded else request.client.host
+    now = time.time()
+    window = _chat_requests[ip]
+    while window and now - window[0] > CHAT_RATE_WINDOW:
+        window.popleft()
+    if len(window) >= CHAT_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many messages. Please wait a minute.")
+    window.append(now)
 NIFTY_50 = "^NSEI"
 
 # Helper function to convert numpy types
@@ -1060,7 +1084,7 @@ async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trad
         err_str = str(e).lower()
         if "rate" in err_str or "429" in err_str or "too many" in err_str:
             raise HTTPException(status_code=429, detail="Rate limited. Please try again in a few minutes.")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/analyze/{symbol}/personalized")
 async def personalized_analysis(
@@ -1101,7 +1125,7 @@ async def personalized_analysis(
         err_str = str(e).lower()
         if "rate" in err_str or "429" in err_str or "too many" in err_str:
             raise HTTPException(status_code=429, detail="Rate limited. Please try again in a few minutes.")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/search")
 def search_stocks(query: str):
@@ -1289,7 +1313,7 @@ def get_stock_history(symbol: str, period: str = "1mo"):
         
     except Exception as e:
         print(f"History API Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/quote/{symbol}")
 def quick_quote(symbol: str):
@@ -1320,7 +1344,8 @@ def quick_quote(symbol: str):
         })
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Quote API Error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # ==================== AGENTIC CHAT ENDPOINT ====================
 from pydantic import BaseModel
@@ -1331,7 +1356,7 @@ class ChatRequest(BaseModel):
     message: str
     context: Optional[Dict] = None
 
-@app.post("/api/chat")
+@app.post("/api/chat", dependencies=[Depends(chat_rate_limit)])
 async def chat_endpoint(request: ChatRequest):
     """
     Agentic Chat Endpoint
@@ -1346,9 +1371,10 @@ async def chat_endpoint(request: ChatRequest):
         )
         return {"response": response}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Chat API Error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/admin/train-universal")
+@app.post("/admin/train-universal", dependencies=[Depends(require_admin)])
 def train_universal_model(background_tasks: BackgroundTasks):
     """Triggers training on Top Nifty Stocks in background."""
     def _train_job():
@@ -1389,14 +1415,12 @@ def train_universal_model(background_tasks: BackgroundTasks):
     background_tasks.add_task(_train_job)
     return {"status": "Training started in background"}
 
-@app.post("/admin/push-model")
-def push_model_to_hub(repo_id: str, token: str = None):
+@app.post("/admin/push-model", dependencies=[Depends(require_admin)])
+def push_model_to_hub(repo_id: str):
     """Push the trained Universal Model to Hugging Face Hub."""
+    token = os.getenv("HF_TOKEN")
     if not token:
-        token = os.getenv("HF_TOKEN")
-    
-    if not token:
-         raise HTTPException(status_code=400, detail="HF_TOKEN not found in env or request.")
+         raise HTTPException(status_code=400, detail="HF_TOKEN not found in env.")
          
     ml_engine = MLEngine()
     success = ml_engine.push_to_hub(repo_id, token)

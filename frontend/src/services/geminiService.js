@@ -40,6 +40,10 @@ class GeminiService {
         body: JSON.stringify(payload),
       })
 
+      if (response.status === 429) {
+        return "You're sending messages too quickly. Please wait a minute and try again."
+      }
+
       if (!response.ok) {
         throw new Error('Failed to fetch from backend agent')
       }
