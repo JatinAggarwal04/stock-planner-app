@@ -28,7 +28,7 @@ if not GROQ_API_KEY:
 class TradeWiseAgent:
     def __init__(self):
         self.client = Groq(api_key=GROQ_API_KEY)
-        self.model_name = "llama-3.3-70b-versatile" 
+        self.model_name = "openai/gpt-oss-120b" 
         
         # Load Knowledge Base
         self.kb = self._load_knowledge_base()
