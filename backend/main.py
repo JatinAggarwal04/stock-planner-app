@@ -74,7 +74,7 @@ _chat_requests = defaultdict(deque)
 
 def require_admin(x_admin_key: Optional[str] = Header(None)):
     """Reject admin calls unless X-Admin-Key matches ADMIN_KEY. Fails closed if ADMIN_KEY is unset."""
-    if not ADMIN_KEY or not x_admin_key or not hmac.compare_digest(x_admin_key, ADMIN_KEY):
+    if not ADMIN_KEY or not x_admin_key or not hmac.compare_digest(x_admin_key.encode(), ADMIN_KEY.encode()):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 def chat_rate_limit(request: Request):
@@ -1079,6 +1079,8 @@ async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trad
         
         return response_data
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Analysis Error: {e}")
         err_str = str(e).lower()
@@ -1343,6 +1345,8 @@ def quick_quote(symbol: str):
             "timestamp": datetime.now().isoformat()
         })
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Quote API Error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
