@@ -15,6 +15,11 @@ export const useWatchlistStore = create(
       initialize: async (userId) => {
         if (!userId) return
 
+        // Never show a previous user's cached data to a different account
+        if (get().userId && get().userId !== userId) {
+          get().clearWatchlist()
+        }
+
         set({ userId })
         // Always fetch fresh data to ensure sync, but store serves as cache
         try {
@@ -71,9 +76,10 @@ export const useWatchlistStore = create(
         if (!userId) return
 
         const result = await watchlistService.recordTrade(userId, symbol, tradeData)
+        if (!result.success) throw result.error
 
-        if (result.success) {
-          // Sync fresh data after trade
+        // Sync fresh data after trade (the trade itself is saved, so a failed refresh isn't fatal)
+        try {
           const trades = await watchlistService.getTrades(userId)
           const history = await watchlistService.getTransactions(userId, symbol)
 
@@ -84,6 +90,8 @@ export const useWatchlistStore = create(
               [symbol]: history
             }
           })
+        } catch (error) {
+          console.error('Failed to refresh portfolio:', error)
         }
       },
 

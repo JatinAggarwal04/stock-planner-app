@@ -10,7 +10,7 @@ import toast from 'react-hot-toast'
 import OrderPad from './OrderPad'
 
 export default function TradePanel({ data, symbol, onAskAI }) {
-  const { getTrade, recordTrade, getHistory, fetchTransactions, removeTrade } = useWatchlistStore()
+  const { getTrade, recordTrade, getHistory, fetchTransactions } = useWatchlistStore()
   const portfolioItem = getTrade(symbol)
   const tradeHistory = getHistory(symbol)
 

@@ -1,6 +1,6 @@
 //frontend/src/components/layout/Navbar.jsx
 import { Link } from 'react-router-dom'
-import { TrendingUp, LogOut, User, Settings } from 'lucide-react'
+import { TrendingUp, LogOut } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import ThemeToggle from './ThemeToggle'
 import { motion } from 'framer-motion'
@@ -63,18 +63,6 @@ export default function Navbar() {
                       <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                         Free Plan
                       </p>
-                    </div>
-
-                    <div className="py-2">
-                      <button className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                        <User className="w-4 h-4" />
-                        <span>Profile</span>
-                      </button>
-                      
-                      <button className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                        <Settings className="w-4 h-4" />
-                        <span>Settings</span>
-                      </button>
                     </div>
 
                     <div className="border-t border-slate-200 dark:border-dark-border py-2">

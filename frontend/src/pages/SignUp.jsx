@@ -96,7 +96,7 @@ export default function Signup() {
               <div>
                 <div className="font-semibold mb-1">24/7 AI Assistant</div>
                 <div className="text-emerald-100 text-sm">
-                  Chat with Gemini AI for instant answers to your questions
+                  Chat with TradeWise AI for instant answers to your questions
                 </div>
               </div>
             </div>

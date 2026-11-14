@@ -1,6 +1,7 @@
 //frontend/src/context/AuthContext.jsx
 import { createContext, useContext, useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
+import { useWatchlistStore } from './WatchlistContext'
 import toast from 'react-hot-toast'
 
 const AuthContext = createContext({})
@@ -25,8 +26,11 @@ export function AuthProvider({ children }) {
     })
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null)
+      if (event === 'SIGNED_OUT') {
+        useWatchlistStore.getState().clearWatchlist()
+      }
     })
 
     return () => subscription.unsubscribe()

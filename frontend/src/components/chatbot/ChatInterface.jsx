@@ -174,7 +174,7 @@ export default function ChatInterface({ onClose, context = 'general' }) {
                   TradeWise AI
                 </h3>
                 <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Powered by Gemini 2.0 Flash
+                  Powered by Groq
                 </p>
               </div>
             </div>

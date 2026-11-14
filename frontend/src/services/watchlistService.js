@@ -15,7 +15,7 @@ export const watchlistService = {
       return data.map(item => item.symbol)
     } catch (error) {
       console.error('Error fetching watchlist:', error)
-      return []
+      throw error
     }
   },
 
@@ -75,7 +75,7 @@ export const watchlistService = {
       return portfolio
     } catch (error) {
       console.error('Error fetching portfolio:', error)
-      return {}
+      throw error
     }
   },
 
@@ -102,12 +102,15 @@ export const watchlistService = {
   async recordTrade(userId, symbol, tradeData) {
     try {
       // 1. Fetch current portfolio position
-      const { data: currentPosition } = await supabase
+      const { data: currentPosition, error: positionError } = await supabase
         .from('portfolio')
         .select('*')
         .eq('user_id', userId)
         .eq('symbol', symbol)
         .single()
+
+      // PGRST116 = no row yet (first trade). Any other error must abort, or we'd overwrite the real position
+      if (positionError && positionError.code !== 'PGRST116') throw positionError
 
       let newQuantity = 0
       let newAveragePrice = 0
@@ -116,6 +119,7 @@ export const watchlistService = {
       const currentAvg = currentPosition ? parseFloat(currentPosition.average_price) : 0
       const tradeQty = parseInt(tradeData.quantity)
       const tradePrice = parseFloat(tradeData.price)
+      if (!(tradeQty > 0) || !(tradePrice > 0)) throw new Error('Quantity and price must be positive')
 
       let realized_pl = null
 

@@ -161,7 +161,7 @@ export default function OrderPad({
                             className="w-full text-lg shadow-xl"
                             variant={type === 'BUY' ? 'success' : 'danger'}
                             onClick={handleSubmit}
-                            disabled={loading || !quantity || parseInt(quantity) <= 0}
+                            disabled={loading || !quantity || parseInt(quantity) <= 0 || (price !== '' && !(parseFloat(price) > 0))}
                         >
                             {loading ? 'Processing...' : (
                                 <>
