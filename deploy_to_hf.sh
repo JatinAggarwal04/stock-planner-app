@@ -31,10 +31,17 @@ git status
 git commit -m "Deploying Backend v1.0"
 
 echo "⬆️ Pushing to Hugging Face (You may be asked for credentials)..."
+echo "   Username: your HF username. Password: an HF access token with write permission."
 git push
+PUSH_STATUS=$?
 
 # 5. Cleanup
 cd ..
 rm -rf hf_deploy
+
+if [ $PUSH_STATUS -ne 0 ]; then
+    echo "❌ Push to Hugging Face failed. Nothing was deployed."
+    exit 1
+fi
 
 echo "✅ Deployment Instructions Completed!"
