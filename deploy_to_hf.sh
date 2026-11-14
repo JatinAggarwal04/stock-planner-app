@@ -6,7 +6,7 @@ rm -rf hf_deploy
 
 # 2. Clone the Space
 echo "📥 Cloning User's Space..."
-git clone https://huggingface.co/spaces/Jatin04/TradeWise hf_deploy
+git clone git@hf.co:spaces/Jatin04/TradeWise hf_deploy
 
 if [ ! -d "hf_deploy" ]; then
     echo "❌ Failed to clone. Please check the URL or your internet connection."
@@ -30,8 +30,7 @@ git add .
 git status
 git commit -m "Deploying Backend v1.0"
 
-echo "⬆️ Pushing to Hugging Face (You may be asked for credentials)..."
-echo "   Username: your HF username. Password: an HF access token with write permission."
+echo "⬆️ Pushing to Hugging Face over SSH..."
 git push
 PUSH_STATUS=$?
 
