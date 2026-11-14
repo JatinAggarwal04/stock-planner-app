@@ -23,6 +23,15 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest
 
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the production image
+        run: docker build -t tradewise-backend backend
+      - name: Smoke test (imports, baked-in FinBERT, sentiment scoring)
+        run: docker run --rm tradewise-backend python scripts/smoke_test.py
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

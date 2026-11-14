@@ -10,53 +10,62 @@ import main
 REAL_FETCH_STOCK_NEWS = main.fetch_stock_news
 
 
-class FakeHF:
-    def __init__(self, error=None):
-        self.calls = 0
-        self.error = error
-
-    async def text_classification(self, text, model):
-        self.calls += 1
-        if self.error:
-            raise Exception(self.error)
-        return [
-            {"label": "positive", "score": 0.7},
-            {"label": "negative", "score": 0.2},
-            {"label": "neutral", "score": 0.1},
-        ]
+ALL_LABELS = [
+    {"label": "positive", "score": 0.7},
+    {"label": "negative", "score": 0.2},
+    {"label": "neutral", "score": 0.1},
+]
 
 
-def analyzer_with(client):
-    analyzer = main.SentimentAnalyzer(None)
-    analyzer.client = client
-    return analyzer
+def use_classifier(monkeypatch, classifier):
+    monkeypatch.setattr(main, "get_finbert", lambda: classifier)
 
 
-def test_breakdown_counts_one_label_per_headline():
-    result = asyncio.run(analyzer_with(FakeHF()).analyze_finbert(["a", "b", "c"]))
-    assert result["breakdown"] == {"positive": 3, "negative": 0, "neutral": 0}
+def test_breakdown_counts_one_label_per_headline(monkeypatch):
+    calls = []
+
+    def classifier(texts, truncation):
+        calls.append((list(texts), truncation))
+        return [ALL_LABELS for _ in texts]
+
+    use_classifier(monkeypatch, classifier)
+    result = asyncio.run(main.SentimentAnalyzer().analyze_finbert(["a", "b", "c", "d", "e", "f"]))
+    assert calls == [(["a", "b", "c", "d", "e"], True)]  # top 5 only, long headlines truncated
+    assert result["breakdown"] == {"positive": 5, "negative": 0, "neutral": 0}
     assert result["sentiment"] == "Bullish"
     assert result["score"] == 0.5
+    assert result["confidence"] == 70.0
 
 
-def test_no_client_is_neutral():
-    assert asyncio.run(main.SentimentAnalyzer(None).analyze_finbert(["a"]))["sentiment"] == "Neutral"
+def test_no_headlines_is_neutral(monkeypatch):
+    use_classifier(monkeypatch, None)  # must not be called
+    assert asyncio.run(main.SentimentAnalyzer().analyze_finbert([])) == main.neutral_sentiment()
 
 
-def test_raises_when_nothing_scored():
-    with pytest.raises(RuntimeError):
-        asyncio.run(analyzer_with(FakeHF(error="boom")).analyze_finbert(["a", "b"]))
+def test_model_failure_raises(monkeypatch):
+    def broken():
+        raise ImportError("transformers not installed")
+
+    monkeypatch.setattr(main, "get_finbert", broken)
+    with pytest.raises(ImportError):
+        asyncio.run(main.SentimentAnalyzer().analyze_finbert(["a"]))
 
 
-def test_stops_after_rate_limit(monkeypatch):
-    async def no_sleep(seconds):
-        return None
+def test_sentiment_failure_falls_back_to_neutral_with_news(monkeypatch):
+    main._fetch_headlines.cache_clear()
+    main._headline_sentiment.cache_clear()
 
-    monkeypatch.setattr(main.asyncio, "sleep", no_sleep)
-    client = FakeHF(error="429 Too Many Requests")
-    with pytest.raises(RuntimeError):
-        asyncio.run(analyzer_with(client).analyze_finbert(["a", "b", "c", "d", "e"]))
-    assert client.calls == 3  # retries for the first headline only
+    async def headlines(symbol, max_items):
+        return [{"title": "T", "link": "l", "published": "p"}]
+
+    def broken():
+        raise RuntimeError("no model")
+
+    monkeypatch.setattr(main, "_fetch_headlines", headlines)
+    monkeypatch.setattr(main, "get_finbert", broken)
+    result = asyncio.run(REAL_FETCH_STOCK_NEWS("SENT.NS"))
+    assert result["news"][0]["title"] == "T"
+    assert result["sentiment"] == main.neutral_sentiment()
 
 
 class FakeResponse:

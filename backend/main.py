@@ -11,7 +11,6 @@ import threading
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Header, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from huggingface_hub import AsyncInferenceClient
 from datetime import datetime
 from typing import Annotated, Dict, List, Optional
 import warnings
@@ -58,7 +57,6 @@ app.add_middleware(
 )
 
 # Configuration
-HF_API_KEY = os.getenv("HF_API_KEY")
 ADMIN_KEY = os.getenv("ADMIN_KEY")
 CHAT_RATE_LIMIT = 10  # requests per window per IP
 CHAT_RATE_WINDOW = 60  # seconds
@@ -117,68 +115,49 @@ def neutral_sentiment() -> Dict:
         "sentiment": "Neutral"
     }
 
+FINBERT_MODEL = "ProsusAI/finbert"
+_finbert = None
+_finbert_lock = threading.Lock()
+
+def get_finbert():
+    """Load FinBERT locally once (downloaded on first use, or baked into the Docker image)."""
+    global _finbert
+    with _finbert_lock:
+        if _finbert is None:
+            from transformers import pipeline  # heavy import, only when sentiment is needed
+            _finbert = pipeline("text-classification", model=FINBERT_MODEL, top_k=None, device=-1)
+    return _finbert
+
 class SentimentAnalyzer:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        # Use Async client
-        self.client = AsyncInferenceClient(token=api_key) if api_key else None
-    
     async def analyze_finbert(self, text_list: List[str]) -> Dict:
-        """Enhanced FinBERT with confidence tracking (Async). Raises if no headline could be scored."""
-        if not text_list or not self.client:
+        """FinBERT sentiment with confidence tracking, run on the local CPU. Raises if no headline could be scored."""
+        if not text_list:
             return neutral_sentiment()
+        
+        classifier = await asyncio.to_thread(get_finbert)
+        # Process only top 5 headlines; each result lists every label with its score
+        results = await asyncio.to_thread(classifier, text_list[:5], truncation=True)
         
         scores = []
         confidences = []
         breakdown = {"positive": 0, "negative": 0, "neutral": 0}
         
-        # Process only top 5 headlines with retry logic
-        for text in text_list[:5]:
-            try:
-                # Async Inference Call with exponential backoff
-                result = None
-                rate_limited = False
-                for attempt in range(3):
-                    try:
-                        result = await self.client.text_classification(
-                            text=text,
-                            model="ProsusAI/finbert"
-                        )
-                        break  # Success, exit retry loop
-                    except Exception as retry_err:
-                        err_str = str(retry_err).lower()
-                        if "rate" in err_str or "429" in err_str or "too many" in err_str:
-                            rate_limited = True
-                            wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
-                            print(f"HuggingFace rate limited (attempt {attempt+1}/3), waiting {wait_time}s...")
-                            await asyncio.sleep(wait_time)
-                        else:
-                            raise  # Non-rate-limit error, don't retry
-                
-                if result is None:
-                    if rate_limited:
-                        break  # Still rate limited after retries; don't hammer the API with the rest
-                    continue
-                
-                headline_score = 0.0
-                for item in result:
-                    label = item['label'].lower()
-                    if label == 'positive':
-                        headline_score += float(item['score'])
-                    elif label == 'negative':
-                        headline_score -= float(item['score'])
-                
-                # Count each headline once, under its most likely label
-                top = max(result, key=lambda item: float(item['score']))
-                top_label = top['label'].lower()
-                breakdown[top_label if top_label in breakdown else 'neutral'] += 1
-                
-                scores.append(headline_score)
-                confidences.append(float(top['score']))
-                
-            except Exception as e:
-                print(f"FinBERT error: {e}")
-                continue
+        for result in results:
+            headline_score = 0.0
+            for item in result:
+                label = item['label'].lower()
+                if label == 'positive':
+                    headline_score += float(item['score'])
+                elif label == 'negative':
+                    headline_score -= float(item['score'])
+            
+            # Count each headline once, under its most likely label
+            top = max(result, key=lambda item: float(item['score']))
+            top_label = top['label'].lower()
+            breakdown[top_label if top_label in breakdown else 'neutral'] += 1
+            
+            scores.append(headline_score)
+            confidences.append(float(top['score']))
         
         if not scores:
             raise RuntimeError("FinBERT could not score any headline")
@@ -424,6 +403,15 @@ def ensure_model():
     # Weekly retraining is triggered by .github/workflows/retrain-model.yml.
     if ml_engine.xgb_model is None:
         threading.Thread(target=train_universal_model_job, daemon=True).start()
+    threading.Thread(target=_warm_up_finbert, daemon=True).start()
+
+def _warm_up_finbert():
+    # Load the sentiment model before the first request needs it
+    try:
+        get_finbert()
+        print("FinBERT loaded.")
+    except Exception as e:
+        print(f"FinBERT load error: {e}")
 
 # ==================== RISK MANAGER ====================
 class RiskManager:
@@ -859,7 +847,7 @@ async def _fetch_headlines(symbol: str, max_items: int):
 
 @alru_cache(maxsize=100, ttl=3600)  # Cache for 1 hour (failures raise, so they aren't cached)
 async def _headline_sentiment(headlines: tuple):
-    sentiment_analyzer = SentimentAnalyzer(HF_API_KEY)
+    sentiment_analyzer = SentimentAnalyzer()
     return await asyncio.wait_for(sentiment_analyzer.analyze_finbert(list(headlines)), timeout=15)
 
 async def fetch_stock_news(symbol: str, max_items: int = 5):

@@ -155,6 +155,7 @@ def test_startup_trains_only_when_model_missing(monkeypatch, has_model, expected
 
     monkeypatch.setattr(main, "ml_engine", Engine())
     monkeypatch.setattr(main, "train_universal_model_job", lambda: runs.append(1))
+    monkeypatch.setattr(main, "_warm_up_finbert", lambda: None)
     monkeypatch.setattr(main.threading, "Thread", InlineThread)
     main.ensure_model()
     assert len(runs) == expected_runs
