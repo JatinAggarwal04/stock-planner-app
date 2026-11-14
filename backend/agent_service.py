@@ -1,10 +1,13 @@
 import os
+import re
 import json
+import math
+import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 import yfinance as yf
 from dotenv import load_dotenv
-from groq import Groq
+from groq import AsyncGroq
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -12,22 +15,14 @@ logger = logging.getLogger(__name__)
 
 load_dotenv(override=True)
 
-# Try loading fallback .envs
-if not os.getenv("GROQ_API_KEY"):
-    frontend_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend', '.env')
-    if os.path.exists(frontend_env):
-        load_dotenv(frontend_env)
-    root_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
-    if os.path.exists(root_env):
-        load_dotenv(root_env)
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     logger.warning("GROQ_API_KEY not found in environment variables!")
 
 class TradeWiseAgent:
     def __init__(self):
-        self.client = Groq(api_key=GROQ_API_KEY)
+        # Without a key the rest of the API still runs; chat just reports it's unavailable
+        self.client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
         self.model_name = "openai/gpt-oss-120b" 
         
         # Load Knowledge Base
@@ -133,10 +128,6 @@ class TradeWiseAgent:
         
         Disclaimer: State "This is not financial advice."
         """
-        
-        # Chat History (Simple limitation: 1 turn memory for now to save tokens/simplify)
-        # In a real app, you'd store this in a DB or Redis.
-        self.history = {}
 
     def _load_knowledge_base(self):
         try:
@@ -146,7 +137,10 @@ class TradeWiseAgent:
             return {}
 
     # --- Tool Implementations ---
-    def get_stock_price(self, symbol: str):
+    async def get_stock_price(self, symbol: str):
+        return await asyncio.to_thread(self._get_stock_price, symbol)
+
+    def _get_stock_price(self, symbol: str):
         try:
             ticker = yf.Ticker(symbol)
             data = ticker.history(period='1d')
@@ -162,10 +156,10 @@ class TradeWiseAgent:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-    def get_technical_analysis(self, symbol: str):
+    async def get_technical_analysis(self, symbol: str):
         try:
             from main import analyze_stock
-            analysis = analyze_stock(symbol)
+            analysis = await analyze_stock(symbol)
             # Minify for context window
             summary = {
                 "signal": analysis.get("recommendation", {}).get("signal"),
@@ -178,18 +172,18 @@ class TradeWiseAgent:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-    def get_trading_plan(self, symbol: str):
+    async def get_trading_plan(self, symbol: str):
         try:
             from main import analyze_stock
-            analysis = analyze_stock(symbol)
+            analysis = await analyze_stock(symbol)
             return json.dumps(analysis.get("trading_plan", {"error": "No plan"}))
         except Exception as e:
             return json.dumps({"error": str(e)})
             
-    def get_news_analysis(self, symbol: str):
+    async def get_news_analysis(self, symbol: str):
         try:
             from main import fetch_stock_news
-            data = fetch_stock_news(symbol)
+            data = await fetch_stock_news(symbol)
             news = data.get('news', [])
             headlines = [n['title'] for n in news[:3]]
             return json.dumps({
@@ -199,29 +193,56 @@ class TradeWiseAgent:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-    def search_knowledge_base(self, query: str):
+    async def search_knowledge_base(self, query: str):
         query = query.lower()
         results = [f"{k}: {v}" for k, v in self.kb.items() if query in k.lower() or query in v.lower()]
         return "\n".join(results[:3]) if results else "No definition found."
 
     # --- Chat Logic ---
-    async def chat(self, user_id: str, message: str, context: Dict = None):
+    @staticmethod
+    def _context_message(context: Optional[Dict]) -> Optional[str]:
+        """Build the context block from whitelisted, type-checked fields only.
+        The context comes from the browser, so free text must never reach the system prompt."""
+        if not isinstance(context, dict):
+            return None
+        symbol = context.get('symbol')
+        if not isinstance(symbol, str) or not re.fullmatch(r"[A-Za-z0-9.^&-]{1,20}", symbol):
+            return None
+
+        def number(value):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return None
+            return round(value, 2) if math.isfinite(value) else None
+
+        ctx_msg = (
+            f"Active Stock: {symbol.upper()}\n"
+            f"Price: {number(context.get('current_price'))}\n"
+            f"Position: {'YES' if context.get('has_position') is True else 'NO'}\n"
+            f"User Avg: {number(context.get('buy_price'))}"
+        )
+        rec = context.get('personalized_recommendation')
+        if isinstance(rec, dict):
+            risk_alert = rec.get('risk_alert')
+            action = (rec.get('recommendation') or {}).get('action') if isinstance(rec.get('recommendation'), dict) else None
+            if risk_alert in ("CRITICAL", "HIGH", "MODERATE"):
+                ctx_msg += f"\nRisk Alert: {risk_alert}"
+            if isinstance(action, str) and re.fullmatch(r"[A-Z_]{1,30}", action):
+                ctx_msg += f"\nRec Action: {action}"
+        return ctx_msg
+
+    async def chat(self, message: str, context: Dict = None):
+        if self.client is None:
+            return "Sorry, the assistant is unavailable right now. Please try again later."
+
         messages = [
             {"role": "system", "content": self.system_prompt}
         ]
         
-        # Inject Context into System Prompt or First User Message
-        if context and "symbol" in context:
-            ctx_msg = f"""
-            Active Stock: {context.get('symbol')}
-            Price: {context.get('current_price')}
-            Position: {'YES' if context.get('has_position') else 'NO'}
-            User Avg: {context.get('buy_price')}
-            """
-            if context.get('personalized_recommendation'):
-                 rec = context.get('personalized_recommendation')
-                 ctx_msg += f"\nRisk Alert: {rec.get('risk_alert')}\nRec Action: {rec.get('recommendation', {}).get('action')}"
-            
+        # Inject Context into System Prompt
+        ctx_msg = self._context_message(context)
+        if ctx_msg:
             messages.append({"role": "system", "content": f"Context Data:\n{ctx_msg}"})
 
         # Add User Message
@@ -229,7 +250,7 @@ class TradeWiseAgent:
         
         try:
             # 1. Initial Call
-            completion = self.client.chat.completions.create(
+            completion = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,
                 tools=self.tools_schema,
@@ -252,7 +273,10 @@ class TradeWiseAgent:
                     logger.info(f"Invoking Tool: {function_name} with {function_args}")
                     
                     if function_to_call:
-                        function_response = function_to_call(**function_args)
+                        try:
+                            function_response = await function_to_call(**function_args)
+                        except TypeError as e:  # Model sent unexpected arguments
+                            function_response = json.dumps({"error": str(e)})
                         
                         messages.append(
                             {
@@ -264,7 +288,7 @@ class TradeWiseAgent:
                         )
                 
                 # 3. Final Response with Tool Outputs
-                second_response = self.client.chat.completions.create(
+                second_response = await self.client.chat.completions.create(
                     model=self.model_name,
                     messages=messages
                 )

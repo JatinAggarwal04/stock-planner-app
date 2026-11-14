@@ -2,13 +2,12 @@ import os
 import joblib
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import gc 
 from typing import List, Dict, Tuple
 from xgboost import XGBClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import HfApi
 
 # Constants
 MODEL_DIR = "models"
@@ -58,45 +57,6 @@ class MLEngine:
         
         return X, y, feature_cols
     
-    def train_universal_model(self) -> Dict:
-        """Trains a single model on multiple top Nifty stocks."""
-        print("Starting Universal Model Training...")
-        all_X = []
-        all_y = []
-        
-        for symbol in TOP_NIFTY_STOCKS:
-            try:
-                print(f"Fetching {symbol}...")
-                ticker = yf.Ticker(symbol)
-                df = ticker.history(period="2y")
-                
-                if len(df) < 200: continue
-                
-                # We need to calculate features first (using FeatureEngine logic, 
-                # but we need to duplicate/import it or assume data passed in has features.
-                # simpler: We will assume main.py calls this with processed data 
-                # OR we implement minimal feature eng here. 
-                # For this step, let's assume we need to import FeatureEngine from main 
-                # BUT that causes circular import.
-                # BETTER: We Implement a static feature calc helper here or accept a list of DFs.
-                
-                # To keep it self-contained, let's just use the main.py pipeline logic 
-                # but we will rely on `incremental_update` for the "live" part mostly.
-                # Actually, effectively doing "Universal Training" requires the FeatureEngine.
-                # Let's import FeatureEngine inside the method to avoid circular import if needed,
-                # Or better, let's move FeatureEngine to a utils file later.
-                # For now, I will skip the complex feature creation inside this class 
-                # and assume the caller passes a combined DataFrame or we address this in Refactor.
-                pass 
-            except Exception as e:
-                print(f"Error {symbol}: {e}")
-                
-        # ... logic continues ...
-        # WAIT: The most robust way is to make `train_universal_model` accept a 
-        # combined DataFrame of all stocks processed by main.py.
-        # BUT `main.py` is the one calling this.
-        return {"status": "Placeholder - Moved logic to main for feature eng access"}
-
     # Refined Approach: `train_model` accepts prepared X, y
     def train_model(self, X: pd.DataFrame, y: pd.Series, feature_cols: List[str]):
         if len(X) < 100:
@@ -127,7 +87,6 @@ class MLEngine:
         self.feature_importance = {k: float(v) for k, v in zip(feature_cols, self.xgb_model.feature_importances_)}
         
         # Save after training
-        # Save after training
         self.save_model()
         gc.collect()
         
@@ -138,36 +97,6 @@ class MLEngine:
             'top_features': sorted(self.feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
         }
     
-    def incremental_update(self, new_data: pd.DataFrame, target_col: str = 'Target_Moderate'):
-        """
-        Updates the model with new data points (Live Learning).
-        Uses XGBoost's `xgb_model` parameter for continuation.
-        """
-        if self.xgb_model is None:
-            return  # Can't update if not trained
-            
-        X, y, _ = self.prepare_features(new_data, target_col)
-        if X.empty or y is None: return
-
-        # Transform features
-        # Note: Ideally we update scaler too, but partial_fit is for MinMaxScaler/StandardScaler 
-        # if we used that. StandardScaler has partial_fit.
-        self.scaler.partial_fit(X) 
-        X_scaled = self.scaler.transform(X)
-        
-        # Update XGBoost (Warm Start)
-        self.xgb_model.fit(X_scaled, y, xgb_model=self.xgb_model.get_booster())
-        
-        # RF doesn't support easy incremental learning in sklearn standard lib
-        # We will re-fit RF or just rely on XGB for the "Learning" part
-        # Or use `warm_start=True` if initialized that way (limited).
-        # For this MVP, we focus on XGBoost learning.
-        
-        self.save_model()
-        self.save_model()
-        print("Model updated with live data.")
-        gc.collect()
-
     def predict(self, latest_data: pd.DataFrame, feature_cols: List[str]) -> Dict:
         if self.xgb_model is None:
             return None # Indicate needed training
@@ -194,7 +123,10 @@ class MLEngine:
             "scaler": self.scaler,
             "importance": self.feature_importance
         }
-        joblib.dump(payload, path)
+        # Write to a temp file then rename, so readers never see a half-written model
+        tmp_path = f"{path}.tmp"
+        joblib.dump(payload, tmp_path)
+        os.replace(tmp_path, path)
         print(f"Model saved to {path}")
 
     def load_model(self):

@@ -6,21 +6,20 @@ import pandas as pd
 import yfinance as yf
 import feedparser
 import gc
-from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Header, Request
+import math
+import threading
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Header, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from huggingface_hub import AsyncInferenceClient
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import Annotated, Dict, List, Optional
 import warnings
 import asyncio
-import functools
 import hmac
 import time
 from collections import defaultdict, deque
 from async_lru import alru_cache
-from concurrent.futures import ThreadPoolExecutor
 from scipy.signal import argrelextrema
 from advanced_analytics import calculate_pressure_index, calculate_breakout_probability
 from ml_engine import MLEngine, TOP_NIFTY_STOCKS
@@ -31,11 +30,6 @@ from ta.trend import SMAIndicator, EMAIndicator, MACD, ADXIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.volatility import AverageTrueRange, BollingerBands
 from ta.volume import OnBalanceVolumeIndicator, ChaikinMoneyFlowIndicator
-
-# ML Models
-from xgboost import XGBClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
 
 load_dotenv()
 
@@ -63,13 +57,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-security = HTTPBearer()
-
 # Configuration
 HF_API_KEY = os.getenv("HF_API_KEY")
 ADMIN_KEY = os.getenv("ADMIN_KEY")
 CHAT_RATE_LIMIT = 10  # requests per window per IP
 CHAT_RATE_WINDOW = 60  # seconds
+CHAT_RATE_MAX_CLIENTS = 10000  # sweep idle clients beyond this many tracked IPs
 _chat_requests = defaultdict(deque)
 
 def require_admin(x_admin_key: Optional[str] = Header(None)):
@@ -80,14 +73,22 @@ def require_admin(x_admin_key: Optional[str] = Header(None)):
 def chat_rate_limit(request: Request):
     """Simple in-memory sliding-window limit per client IP."""
     forwarded = request.headers.get("x-forwarded-for")
-    ip = forwarded.split(",")[0].strip() if forwarded else request.client.host
+    if forwarded:
+        ip = forwarded.split(",")[0].strip()
+    else:
+        ip = request.client.host if request.client else "unknown"
     now = time.time()
+    if len(_chat_requests) > CHAT_RATE_MAX_CLIENTS:
+        # Drop idle clients so many distinct IPs can't grow memory without bound
+        for key in [k for k, w in _chat_requests.items() if not w or now - w[-1] > CHAT_RATE_WINDOW]:
+            del _chat_requests[key]
     window = _chat_requests[ip]
     while window and now - window[0] > CHAT_RATE_WINDOW:
         window.popleft()
     if len(window) >= CHAT_RATE_LIMIT:
         raise HTTPException(status_code=429, detail="Too many messages. Please wait a minute.")
     window.append(now)
+
 NIFTY_50 = "^NSEI"
 
 # Helper function to convert numpy types
@@ -95,8 +96,8 @@ def convert_to_python_type(obj):
     """Convert numpy types to native Python types for JSON serialization"""
     if isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
         return int(obj)
-    elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
-        return float(obj)
+    elif isinstance(obj, (float, np.floating)):
+        return float(obj) if math.isfinite(obj) else None
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
     elif isinstance(obj, dict):
@@ -108,7 +109,14 @@ def convert_to_python_type(obj):
     return obj
 
 # ==================== SENTIMENT ENGINE ====================
-# ==================== SENTIMENT ENGINE ====================
+def neutral_sentiment() -> Dict:
+    return {
+        "score": 0.0,
+        "confidence": 0.0,
+        "breakdown": {"positive": 0, "negative": 0, "neutral": 0},
+        "sentiment": "Neutral"
+    }
+
 class SentimentAnalyzer:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -116,95 +124,74 @@ class SentimentAnalyzer:
         self.client = AsyncInferenceClient(token=api_key) if api_key else None
     
     async def analyze_finbert(self, text_list: List[str]) -> Dict:
-        """Enhanced FinBERT with confidence tracking (Async)"""
+        """Enhanced FinBERT with confidence tracking (Async). Raises if no headline could be scored."""
         if not text_list or not self.client:
-            return {
-                "score": 0.0,
-                "confidence": 0.0,
-                "breakdown": {"positive": 0, "negative": 0, "neutral": 0},
-                "sentiment": "Neutral"
-            }
+            return neutral_sentiment()
         
-        try:
-            scores = []
-            confidences = []
-            breakdown = {"positive": 0, "negative": 0, "neutral": 0}
-            
-            # Process only top 5 headlines with retry logic
-            for text in text_list[:5]:
-                try:
-                    # Async Inference Call with exponential backoff
-                    result = None
-                    for attempt in range(3):
-                        try:
-                            result = await self.client.text_classification(
-                                text=text,
-                                model="ProsusAI/finbert"
-                            )
-                            break  # Success, exit retry loop
-                        except Exception as retry_err:
-                            err_str = str(retry_err).lower()
-                            if "rate" in err_str or "429" in err_str or "too many" in err_str:
-                                wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
-                                print(f"HuggingFace rate limited (attempt {attempt+1}/3), waiting {wait_time}s...")
-                                await asyncio.sleep(wait_time)
-                            else:
-                                raise  # Non-rate-limit error, don't retry
-                    
-                    if result is None:
-                        continue  # All retries exhausted for this headline
-                    
-                    headline_score = 0.0
-                    max_confidence = 0.0
-                    
-                    for item in result:
-                        label = item['label'].lower()
-                        score = float(item['score'])
-                        
-                        if score > max_confidence:
-                            max_confidence = score
-                        
-                        if label == 'positive':
-                            headline_score += score
-                            breakdown['positive'] += 1
-                        elif label == 'negative':
-                            headline_score -= score
-                            breakdown['negative'] += 1
+        scores = []
+        confidences = []
+        breakdown = {"positive": 0, "negative": 0, "neutral": 0}
+        
+        # Process only top 5 headlines with retry logic
+        for text in text_list[:5]:
+            try:
+                # Async Inference Call with exponential backoff
+                result = None
+                rate_limited = False
+                for attempt in range(3):
+                    try:
+                        result = await self.client.text_classification(
+                            text=text,
+                            model="ProsusAI/finbert"
+                        )
+                        break  # Success, exit retry loop
+                    except Exception as retry_err:
+                        err_str = str(retry_err).lower()
+                        if "rate" in err_str or "429" in err_str or "too many" in err_str:
+                            rate_limited = True
+                            wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
+                            print(f"HuggingFace rate limited (attempt {attempt+1}/3), waiting {wait_time}s...")
+                            await asyncio.sleep(wait_time)
                         else:
-                            breakdown['neutral'] += 1
-                    
-                    scores.append(headline_score)
-                    confidences.append(max_confidence)
-                    
-                except Exception as e:
+                            raise  # Non-rate-limit error, don't retry
+                
+                if result is None:
+                    if rate_limited:
+                        break  # Still rate limited after retries; don't hammer the API with the rest
                     continue
-            
-            if not scores:
-                return {
-                    "score": 0.0,
-                    "confidence": 0.0,
-                    "breakdown": breakdown,
-                    "sentiment": "Neutral"
-                }
-            
-            avg_score = float(np.mean(scores))
-            avg_confidence = float(np.mean(confidences))
-            
-            return {
-                "score": round(avg_score, 3),
-                "confidence": round(avg_confidence * 100, 1),
-                "breakdown": breakdown,
-                "sentiment": "Bullish" if avg_score > 0.2 else "Bearish" if avg_score < -0.2 else "Neutral"
-            }
-            
-        except Exception as e:
-            print(f"FinBERT error: {e}")
-            return {
-                "score": 0.0,
-                "confidence": 0.0,
-                "breakdown": {"positive": 0, "negative": 0, "neutral": 0},
-                "sentiment": "Neutral"
-            }
+                
+                headline_score = 0.0
+                for item in result:
+                    label = item['label'].lower()
+                    if label == 'positive':
+                        headline_score += float(item['score'])
+                    elif label == 'negative':
+                        headline_score -= float(item['score'])
+                
+                # Count each headline once, under its most likely label
+                top = max(result, key=lambda item: float(item['score']))
+                top_label = top['label'].lower()
+                breakdown[top_label if top_label in breakdown else 'neutral'] += 1
+                
+                scores.append(headline_score)
+                confidences.append(float(top['score']))
+                
+            except Exception as e:
+                print(f"FinBERT error: {e}")
+                continue
+        
+        if not scores:
+            raise RuntimeError("FinBERT could not score any headline")
+        
+        avg_score = float(np.mean(scores))
+        avg_confidence = float(np.mean(confidences))
+        
+        return {
+            "score": round(avg_score, 3),
+            "confidence": round(avg_confidence * 100, 1),
+            "breakdown": breakdown,
+            "sentiment": "Bullish" if avg_score > 0.2 else "Bearish" if avg_score < -0.2 else "Neutral"
+        }
 
 # ==================== SUPPORT/RESISTANCE DETECTOR ====================
 class SupportResistanceAnalyzer:
@@ -254,8 +241,6 @@ class SupportResistanceAnalyzer:
         nearest_support = max([s for s in support_clustered if s < current_price], default=None)
         
         # Calculate breakout probability
-        atr = df['ATR'].iloc[-1] if 'ATR' in df.columns else (df['High'] - df['Low']).iloc[-20:].mean()
-        
         resistance_distance = None
         resistance_breakout_prob = 0.0
         support_distance = None
@@ -375,8 +360,69 @@ class FeatureEngine:
         data['Target_Moderate'] = (data['Return_1d'] > 0.002).astype(int)
         return data
 
-# ==================== ML ENGINE ====================
 # ==================== ML ENGINE (Refactored to ml_engine.py) ====================
+FEATURE_COLS = [
+    'RSI', 'MACD_Diff', 'ADX', 'Stoch_K', 'BB_Width',
+    'Momentum_10', 'Momentum_20', 'Vol_Ratio',
+    'Dist_SMA20', 'Dist_SMA50', 'Dist_SMA200',
+    'Volume_Ratio', 'Close_Position', 'Trend_Score', 'CMF'
+]
+
+# Loaded once and shared by all requests; replaced wholesale when training finishes
+ml_engine = MLEngine()
+_training_lock = threading.Lock()
+
+def train_universal_model_job():
+    """Train the universal model on top Nifty stocks and swap it in. Skips if a run is already active."""
+    global ml_engine
+    if not _training_lock.acquire(blocking=False):
+        print("Training already in progress, skipping.")
+        return
+    try:
+        print("Starting batch training...")
+        new_engine = MLEngine()
+        all_X = []
+        all_y = []
+        
+        feature_engine = FeatureEngine()
+        
+        for symbol in TOP_NIFTY_STOCKS:
+            try:
+                print(f"Fetching {symbol}...")
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period="2y")
+                if len(df) < 200: continue
+                
+                # Apply same feature engineering pipeline
+                df = feature_engine.calculate_technical_features(df)
+                df = feature_engine.calculate_alpha_features(df)
+                df = feature_engine.create_targets(df)
+                
+                X, y, cols = new_engine.prepare_features(df)
+                if not X.empty and y is not None:
+                    all_X.append(X)
+                    all_y.append(y)
+            except Exception as e:
+                print(f"Skipping {symbol}: {e}")
+                
+        if all_X:
+            combined_X = pd.concat(all_X)
+            combined_y = pd.concat(all_y)
+            new_engine.train_model(combined_X, combined_y, cols)
+            ml_engine = new_engine
+            print("Universal Model Trained & Saved.")
+        else:
+            print("No data collected for training.")
+    except Exception as e:
+        print(f"Training Error: {e}")
+    finally:
+        _training_lock.release()
+
+@app.on_event("startup")
+def ensure_model():
+    # A fresh deploy has no model file: train the universal model once in the background
+    if ml_engine.xgb_model is None:
+        threading.Thread(target=train_universal_model_job, daemon=True).start()
 
 # ==================== RISK MANAGER ====================
 class RiskManager:
@@ -542,7 +588,7 @@ class TradingPlanGenerator:
             stop_loss = current_price - stop_loss_dist
             target_1 = current_price + target_1_dist
             target_2 = current_price + target_2_dist
-            rec_type = "LONG"
+            rec_type = "LONG" if trend == "Bullish" else "WAIT"
         
         # Weekly Pivot Calculation (Last 5 trading days)
         weekly_data = df.tail(5)
@@ -797,45 +843,230 @@ def root():
         "examples": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS"]
     }
 
-@alru_cache(maxsize=100, ttl=3600)  # Cache for 1 hour
+@alru_cache(maxsize=100, ttl=3600)  # Cache for 1 hour (failures raise, so they aren't cached)
+async def _fetch_headlines(symbol: str, max_items: int):
+    import urllib.parse
+    search_query = urllib.parse.quote(f"{symbol} stock news India when:7d")
+    rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-IN&gl=IN&ceid=IN:en"
+    
+    # Fetch with a timeout (feedparser's own fetch has none), then parse in a thread
+    response = await asyncio.to_thread(requests.get, rss_url, timeout=10)
+    response.raise_for_status()
+    feed = await asyncio.to_thread(feedparser.parse, response.content)
+    
+    return [{"title": x.title, "link": x.link, "published": x.published} for x in feed.entries[:max_items]]
+
+@alru_cache(maxsize=100, ttl=3600)  # Cache for 1 hour (failures raise, so they aren't cached)
+async def _headline_sentiment(headlines: tuple):
+    sentiment_analyzer = SentimentAnalyzer(HF_API_KEY)
+    return await asyncio.wait_for(sentiment_analyzer.analyze_finbert(list(headlines)), timeout=15)
+
 async def fetch_stock_news(symbol: str, max_items: int = 5):
     """Fetches latest news and performs sentiment analysis (Async + Cached)."""
     try:
-        loop = asyncio.get_event_loop()
-        
-        # Determine company name (Blocking, so run in executor or just use symbol for speed)
-        # Using symbol for search is faster and safer for generic searches
-        import urllib.parse
-        search_query = urllib.parse.quote(f"{symbol} stock news India when:7d")
-        rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-IN&gl=IN&ceid=IN:en"
-        
-        # Async Feed Fetch using Executor
-        feed = await loop.run_in_executor(None, feedparser.parse, rss_url)
-        
-        news = [{"title": x.title, "link": x.link, "published": x.published} for x in feed.entries[:max_items]]
-        headlines = [x['title'] for x in news]
-        
-        if not headlines:
-             return {"news": [], "sentiment": {"score": 0, "sentiment": "Neutral", "label": "Neutral"}}
-
-        # Sentiment Analysis (Async)
-        sentiment_analyzer = SentimentAnalyzer(HF_API_KEY)
-        sentiment = await sentiment_analyzer.analyze_finbert(headlines)
-        
-        return {
-            "news": news,
-            "sentiment": sentiment
-        }
+        news = await _fetch_headlines(symbol, max_items)
     except Exception as e:
         print(f"News fetch error: {e}")
-        return {"news": [], "sentiment": {"score": 0, "sentiment": "Neutral", "label": "Neutral"}}
+        return {"news": [], "sentiment": neutral_sentiment()}
+    
+    if not news:
+        return {"news": [], "sentiment": neutral_sentiment()}
+    
+    try:
+        sentiment = await _headline_sentiment(tuple(x['title'] for x in news))
+    except Exception as e:
+        print(f"Sentiment error: {e}")
+        sentiment = neutral_sentiment()
+    
+    return {"news": news, "sentiment": sentiment}
+
+def _build_analysis(symbol: str, df: pd.DataFrame, info: Dict, news_data: Dict,
+                    account_size: float, risk_per_trade: float) -> Dict:
+    """CPU-bound part of /analyze: indicators, ML, risk and trading plan."""
+    # Feature Engineering
+    feature_engine = FeatureEngine()
+    df = feature_engine.calculate_technical_features(df)
+    df = feature_engine.calculate_alpha_features(df)
+    df = feature_engine.create_targets(df)
+    
+    # 1. ML Prediction (Universal Model)
+    latest_features = df.iloc[[-1]]
+    ml_predictions = ml_engine.predict(latest_features, FEATURE_COLS)
+    
+    if ml_predictions:
+        ml_prob = ml_predictions['ensemble_probability']
+        ml_stats = {"ensemble_accuracy": "Universal Model", "top_features": []}
+    else:
+        # Model is still training (fresh deploy): stay neutral until it's ready
+        ml_prob = 50.0
+        ml_stats = {"ensemble_accuracy": "Model training", "top_features": []}
+
+    st_signal = "Bullish" if ml_prob > 60 else "Bearish" if ml_prob < 40 else "Neutral"
+    st_confidence = ml_prob if st_signal == "Bullish" else (100 - ml_prob) if st_signal == "Bearish" else 50
+    st_reasons = ["AI Model Prediction"] + [f"{k}: {v:.2f}" for k, v in ml_stats.get('top_features', [])]
+
+    # 2. Rule Based Analysis (Long Term)
+    tech_analyzer = TechnicalAnalyzer()
+    lt_view = tech_analyzer.analyze_long_term_view(df)
+    
+    # 3. Sentiment Analysis
+    news = news_data['news']
+    sentiment = news_data['sentiment']
+    
+    # 4. Support/Resistance & Risk
+    sr_analyzer = SupportResistanceAnalyzer()
+    support_resistance = sr_analyzer.find_levels(df)
+    risk_manager = RiskManager()
+    risk_metrics = risk_manager.calculate_metrics(df)
+    
+    # 5. Final Aggregation (Factoring in Sentiment)
+    # Normalize Sentiment
+    sent_prob = 50.0
+    sent_score = sentiment.get('score', 0)
+    if sentiment.get('sentiment') == 'Bullish':
+         sent_prob = 50 + (sent_score * 50)
+    elif sentiment.get('sentiment') == 'Bearish':
+         sent_prob = 50 - (sent_score * 50)
+    
+    # Normalize Long Term
+    lt_prob = lt_view['confidence'] if lt_view['signal'] == 'Bullish' else (100 - lt_view['confidence']) if lt_view['signal'] == 'Bearish' else 50
+    
+    # WEIGHTED FORMULA: ML (50%) + Trend (30%) + Sentiment (20%)
+    final_score = (ml_prob * 0.5) + (lt_prob * 0.3) + (sent_prob * 0.2)
+    final_signal = "BUY" if final_score > 60 else "SELL" if final_score < 40 else "HOLD"
+    
+    # Update Short Term confidence with sentiment influence
+    st_confidence = (st_confidence * 0.8) + (sent_prob * 0.2)
+
+    # Trade Setup
+    current_price = float(df['Close'].iloc[-1])
+    atr = float(df['ATR'].iloc[-1]) if 'ATR' in df.columns else float(df['Close'].iloc[-1] * 0.02)
+    
+    stop_loss = float(current_price - (2 * atr))
+    target_1 = float(current_price + (2 * atr))
+    target_2 = float(current_price + (3 * atr))
+    target_3 = float(current_price + (4 * atr))
+    
+    position_info = risk_manager.calculate_position_size(
+        account_size, risk_per_trade, current_price, stop_loss
+    )
+
+    # 6. Generate Trading Plan (Intraday, Swing, Long Term)
+    # Re-using df since it has 2 years data
+    intraday_plan = TradingPlanGenerator.calculate_intraday_levels(df)
+    swing_plan = TradingPlanGenerator.calculate_swing_targets(
+        df, 
+        current_price, 
+        {"BUY": "Bullish", "SELL": "Bearish"}.get(final_signal, "Neutral")
+    )
+    long_term_plan = TradingPlanGenerator.calculate_long_term_targets(
+        current_price,
+        risk_metrics['volatility_annual'],
+        df  # Pass df for monthly pivots
+    )
+    
+    trading_plan = {
+        "intraday": intraday_plan,
+        "swing": swing_plan,
+        "long_term": long_term_plan
+    }
+    
+    # 7. Advanced Algorithmic Analysis (Industry Grade)
+    pressure_index = calculate_pressure_index(df)
+    
+    # Determine meaningful resistance to test (using R1 from Intraday)
+    r1_level = intraday_plan.get('resistance', {}).get('R1', 0)
+    breakout_prob = calculate_breakout_probability(df, r1_level)
+
+    gc.collect()
+
+    response_data_raw = {
+        "symbol": symbol,
+        "company_name": info.get('longName', symbol),
+        "current_price": round(current_price, 2),
+        "advanced_metrics": {
+            "pressure_index": pressure_index,
+            "breakout_probability": breakout_prob
+        },
+        "recommendation": {
+            "signal": final_signal,
+            "confidence_score": round(final_score, 1),
+            "risk_rating": "Low" if risk_metrics['volatility_annual'] < 20 else "Medium" if risk_metrics['volatility_annual'] < 35 else "High",
+            "summary": f"Hybrid signal based on ML ({st_signal}), Trend ({lt_view['signal']}), and Sentiment ({sentiment['sentiment']}).",
+            "views": {
+                "short_term": {
+                    "signal": st_signal,
+                    "confidence": round(st_confidence, 1),
+                    "reasons": st_reasons + [f"Sentiment Impact: {int(sent_prob)}%"],
+                    "indicators": {
+                        "rsi": round(df['RSI'].iloc[-1], 2),
+                        "ml_score": ml_prob,
+                        "macd_diff": round(df['MACD_Diff'].iloc[-1], 2)
+                    }
+                },
+                "long_term": lt_view
+            }
+        },
+        
+        "ml_analysis": {
+            "model_accuracy": ml_stats['ensemble_accuracy'] if ml_stats else 0,
+            "top_features": ml_stats['top_features'] if ml_stats else []
+        },
+
+        "technical_analysis": { # Legacy structure
+             "rsi": df['RSI'].iloc[-1],
+             "macd": "Bullish" if df['MACD_Diff'].iloc[-1] > 0 else "Bearish",
+             "trend": lt_view['signal'],
+             "adx": lt_view['indicators']['adx']
+        },
+        "support_resistance": support_resistance,
+        "risk_metrics": risk_metrics,
+        "sentiment_analysis": sentiment,
+        "latest_news": news,
+        
+        "trading_plan": trading_plan,  # New Field
+        
+        "trade_setup": {
+            "entry_price": round(current_price, 2),
+            "stop_loss": round(stop_loss, 2),
+            "alternative_stops": risk_manager.calculate_stop_levels(
+                current_price, 
+                atr, 
+                "SELL" if final_signal == "SELL" else "BUY"
+            ),
+            "targets": {
+                "target_1": round(target_1, 2),
+                "target_2": round(target_2, 2),
+                "target_3": round(target_3, 2)
+            },
+            "risk_reward": f"1:{round((target_1 - current_price) / (current_price - stop_loss), 2)}"
+        },
+        "position_sizing": position_info,
+        "market_data": {
+            "52_week_high": round(float(df['High'].rolling(252).max().iloc[-1]) if len(df) >= 252 else float(df['High'].max()), 2),
+            "52_week_low": round(float(df['Low'].rolling(252).min().iloc[-1]) if len(df) >= 252 else float(df['Low'].min()), 2),
+            "avg_volume_20d": int(df['Volume'].rolling(20).mean().iloc[-1]),
+            "current_volume": int(df['Volume'].iloc[-1]),
+            "today_open": round(float(df['Open'].iloc[-1]), 2),
+            "today_high": round(float(df['High'].iloc[-1]), 2),
+            "today_low": round(float(df['Low'].iloc[-1]), 2),
+            "market_cap": info.get('marketCap', 0),
+            "pe_ratio": round(info['trailingPE'], 2) if isinstance(info.get('trailingPE'), (int, float)) else None
+        }
+    }
+    
+    return response_data_raw
 
 # In-memory cache for analyze_stock results (5-minute TTL)
 _analysis_cache = {}
 _ANALYSIS_CACHE_TTL = 300  # seconds
 
 @app.get("/analyze/{symbol}")
-async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trade: float = 2.0):
+async def analyze_stock(
+    symbol: str,
+    account_size: Annotated[float, Query(gt=0, allow_inf_nan=False)] = 100000,
+    risk_per_trade: Annotated[float, Query(gt=0, le=100, allow_inf_nan=False)] = 2.0
+):
     """Hybrid Analysis: ML for Short Term, Rules for Long Term + Sentiment"""
     
     try:
@@ -875,198 +1106,11 @@ async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trad
         if df.empty or len(df) < 200:
             raise HTTPException(status_code=404, detail="Insufficient data")
         
-        # Feature Engineering (CPU Bound - fast enough for main thread usually, but safe to offload if needed)
-        feature_engine = FeatureEngine()
-        df = feature_engine.calculate_technical_features(df)
-        df = feature_engine.calculate_alpha_features(df)
-        df = feature_engine.create_targets(df)
-        
-        # 1. ML Prediction & Live Learning (Universal Model)
-        ml_engine = MLEngine()
-        
-        feature_cols = [
-            'RSI', 'MACD_Diff', 'ADX', 'Stoch_K', 'BB_Width',
-            'Momentum_10', 'Momentum_20', 'Vol_Ratio',
-            'Dist_SMA20', 'Dist_SMA50', 'Dist_SMA200',
-            'Volume_Ratio', 'Close_Position', 'Trend_Score', 'CMF'
-        ]
-        
-        latest_features = df.iloc[[-1]]
-        ml_predictions = ml_engine.predict(latest_features, feature_cols)
-        
-        if ml_predictions:
-            # Model exists: Predict -> Live Learn
-            ml_prob = ml_predictions['ensemble_probability']
-            ml_stats = {"ensemble_accuracy": "Universal Model", "top_features": []}
-            
-            # LIVE LEARNING: Update with recent data
-            try:
-                # We update with recent history to reinforce patterns
-                ml_engine.incremental_update(df.tail(100))
-            except Exception as e:
-                print(f"Live Learning Error: {e}")
-        else:
-            # Bootstrap: Train on this stock if no model exists
-            print("Bootstrapping Universal Model...")
-            X, y, _ = ml_engine.prepare_features(df)
-            ml_stats = ml_engine.train_model(X, y, feature_cols)
-            ml_predictions = ml_engine.predict(latest_features, feature_cols)
-            ml_prob = ml_predictions['ensemble_probability']
-
-        st_signal = "Bullish" if ml_prob > 60 else "Bearish" if ml_prob < 40 else "Neutral"
-        st_confidence = ml_prob if st_signal == "Bullish" else (100 - ml_prob) if st_signal == "Bearish" else 50
-        st_reasons = ["AI Model Prediction"] + [f"{k}: {v:.2f}" for k, v in ml_stats.get('top_features', [])]
-
-        # 2. Rule Based Analysis (Long Term)
-        tech_analyzer = TechnicalAnalyzer()
-        lt_view = tech_analyzer.analyze_long_term_view(df)
-        
-        # 3. Sentiment Analysis
-        # 3. Sentiment Analysis (Refactored)
-        news = news_data['news']
-        sentiment = news_data['sentiment']
-        
-        # 4. Support/Resistance & Risk
-        sr_analyzer = SupportResistanceAnalyzer()
-        support_resistance = sr_analyzer.find_levels(df)
-        risk_manager = RiskManager()
-        risk_metrics = risk_manager.calculate_metrics(df)
-        
-        # 5. Final Aggregation (Factoring in Sentiment)
-        # Normalize Sentiment
-        sent_prob = 50.0
-        sent_score = sentiment.get('score', 0)
-        if sentiment.get('sentiment') == 'Bullish':
-             sent_prob = 50 + (sent_score * 50)
-        elif sentiment.get('sentiment') == 'Bearish':
-             sent_prob = 50 - (sent_score * 50)
-        
-        # Normalize Long Term
-        lt_prob = lt_view['confidence'] if lt_view['signal'] == 'Bullish' else (100 - lt_view['confidence']) if lt_view['signal'] == 'Bearish' else 50
-        
-        # WEIGHTED FORMULA: ML (50%) + Trend (30%) + Sentiment (20%)
-        final_score = (ml_prob * 0.5) + (lt_prob * 0.3) + (sent_prob * 0.2)
-        final_signal = "BUY" if final_score > 60 else "SELL" if final_score < 40 else "HOLD"
-        
-        # Update Short Term confidence with sentiment influence
-        st_confidence = (st_confidence * 0.8) + (sent_prob * 0.2)
-
-        # Trade Setup
-        current_price = float(df['Close'].iloc[-1])
-        atr = float(df['ATR'].iloc[-1]) if 'ATR' in df.columns else float(df['Close'].iloc[-1] * 0.02)
-        
-        stop_loss = float(current_price - (2 * atr))
-        target_1 = float(current_price + (2 * atr))
-        target_2 = float(current_price + (3 * atr))
-        target_3 = float(current_price + (4 * atr))
-        
-        position_info = risk_manager.calculate_position_size(
-            account_size, risk_per_trade, current_price, stop_loss
-        )
-
-        # 6. Generate Trading Plan (Intraday, Swing, Long Term)
-        # Re-using df since it has 2 years data
-        intraday_plan = TradingPlanGenerator.calculate_intraday_levels(df)
-        swing_plan = TradingPlanGenerator.calculate_swing_targets(
-            df, 
-            current_price, 
-            "Bullish" if final_signal == 'BUY' else "Bearish"
-        )
-        long_term_plan = TradingPlanGenerator.calculate_long_term_targets(
-            current_price,
-            risk_metrics['volatility_annual'],
-            df  # Pass df for monthly pivots
+        # Feature engineering, ML and risk maths (incl. the Nifty fetch) run in a thread so the event loop stays free
+        response_data_raw = await asyncio.to_thread(
+            _build_analysis, symbol, df, info, news_data, account_size, risk_per_trade
         )
         
-        trading_plan = {
-            "intraday": intraday_plan,
-            "swing": swing_plan,
-            "long_term": long_term_plan
-        }
-        
-        # 7. Advanced Algorithmic Analysis (Industry Grade)
-        pressure_index = calculate_pressure_index(df)
-        
-        # Determine meaningful resistance to test (using R1 from Intraday)
-        r1_level = intraday_plan.get('resistance', {}).get('R1', 0)
-        breakout_prob = calculate_breakout_probability(df, r1_level)
-
-        gc.collect()
-
-        response_data_raw = {
-            "symbol": symbol,
-            "company_name": info.get('longName', symbol),
-            "current_price": round(current_price, 2),
-            "advanced_metrics": {
-                "pressure_index": pressure_index,
-                "breakout_probability": breakout_prob
-            },
-            "recommendation": {
-                "signal": final_signal,
-                "confidence_score": round(final_score, 1),
-                "summary": f"Hybrid signal based on ML ({st_signal}), Trend ({lt_view['signal']}), and Sentiment ({sentiment['sentiment']}).",
-                "views": {
-                    "short_term": {
-                        "signal": st_signal,
-                        "confidence": round(st_confidence, 1),
-                        "reasons": st_reasons + [f"Sentiment Impact: {int(sent_prob)}%"],
-                        "indicators": {
-                            "rsi": round(df['RSI'].iloc[-1], 2),
-                            "ml_score": ml_prob,
-                            "macd_diff": round(df['MACD_Diff'].iloc[-1], 2)
-                        }
-                    },
-                    "long_term": lt_view
-                }
-            },
-            
-            "ml_analysis": {
-                "model_accuracy": ml_stats['ensemble_accuracy'] if ml_stats else 0,
-                "top_features": ml_stats['top_features'] if ml_stats else []
-            },
-
-            "technical_analysis": { # Legacy structure
-                 "rsi": df['RSI'].iloc[-1],
-                 "macd": "Bullish",
-                 "trend": lt_view['signal'],
-                 "adx": lt_view['indicators']['adx']
-            },
-            "support_resistance": support_resistance,
-            "risk_metrics": risk_metrics,
-            "sentiment_analysis": sentiment,
-            "latest_news": news,
-            
-            "trading_plan": trading_plan,  # New Field
-            
-            "trade_setup": {
-                "entry_price": round(current_price, 2),
-                "stop_loss": round(stop_loss, 2),
-                "alternative_stops": risk_manager.calculate_stop_levels(
-                    current_price, 
-                    atr, 
-                    "BUY" if final_signal == "BUY" else "SELL"
-                ),
-                "targets": {
-                    "target_1": round(target_1, 2),
-                    "target_2": round(target_2, 2),
-                    "target_3": round(target_3, 2)
-                },
-                "risk_reward": f"1:{round((target_1 - current_price) / (current_price - stop_loss), 2)}"
-            },
-            "position_sizing": position_info,
-            "market_data": {
-                "52_week_high": round(float(df['High'].rolling(252).max().iloc[-1]) if len(df) >= 252 else float(df['High'].max()), 2),
-                "52_week_low": round(float(df['Low'].rolling(252).min().iloc[-1]) if len(df) >= 252 else float(df['Low'].min()), 2),
-                "avg_volume_20d": int(df['Volume'].rolling(20).mean().iloc[-1]),
-                "current_volume": int(df['Volume'].iloc[-1]),
-                "today_open": round(float(df['Open'].iloc[-1]), 2),
-                "today_high": round(float(df['High'].iloc[-1]), 2),
-                "today_low": round(float(df['Low'].iloc[-1]), 2),
-                "market_cap": info.get('marketCap', 0),
-                "pe_ratio": round(info.get('trailingPE', 0), 2)
-            }
-        }
-
         response_data = convert_to_python_type(response_data_raw)
 
         # Store in cache
@@ -1091,10 +1135,10 @@ async def analyze_stock(symbol: str, account_size: float = 100000, risk_per_trad
 @app.get("/analyze/{symbol}/personalized")
 async def personalized_analysis(
     symbol: str,
-    buy_price: float,
-    quantity: int,
-    account_size: float = 100000,
-    risk_per_trade: float = 2.0
+    buy_price: Annotated[float, Query(gt=0, allow_inf_nan=False)],
+    quantity: Annotated[int, Query(gt=0)],
+    account_size: Annotated[float, Query(gt=0, allow_inf_nan=False)] = 100000,
+    risk_per_trade: Annotated[float, Query(gt=0, le=100, allow_inf_nan=False)] = 2.0
 ):
     """Personalized analysis based on user's position"""
     
@@ -1115,10 +1159,8 @@ async def personalized_analysis(
             current_price, buy_price, quantity, stop_loss, targets, risk_metrics, trading_plan
         )
         
-        # Merge with base analysis
-        base_analysis['personalized_recommendation'] = personalized_rec
-        
-        return convert_to_python_type(base_analysis)
+        # Merge into a new dict: base_analysis is the shared cache entry and must not carry this user's position
+        return convert_to_python_type({**base_analysis, 'personalized_recommendation': personalized_rec})
         
     except HTTPException:
         raise  # Re-raise HTTPExceptions (including 429s) as-is
@@ -1147,7 +1189,8 @@ def search_stocks(query: str):
                 'enableFuzzyQuery': False,
                 'quotesQueryId': 'tss_match_phrase_query'
             },
-            headers=headers
+            headers=headers,
+            timeout=10
         )
         
         data = response.json()
@@ -1317,6 +1360,10 @@ def get_stock_history(symbol: str, period: str = "1mo"):
         print(f"History API Error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# Short-lived quote cache so watchlist polling from many clients doesn't hit Yahoo per request
+_quote_cache = {}
+_QUOTE_CACHE_TTL = 30  # seconds
+
 @app.get("/quote/{symbol}")
 def quick_quote(symbol: str):
     """Quick price quote for watchlist"""
@@ -1324,6 +1371,10 @@ def quick_quote(symbol: str):
     try:
         if not symbol.endswith('.NS') and not symbol.endswith('.BO'):
             symbol = f"{symbol}.NS"
+        
+        cached = _quote_cache.get(symbol)
+        if cached and time.time() - cached[0] < _QUOTE_CACHE_TTL:
+            return cached[1]
         
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="5d")
@@ -1336,7 +1387,7 @@ def quick_quote(symbol: str):
         change = float(current - previous)
         change_pct = float((change / previous) * 100) if previous != 0 else 0.0
         
-        return convert_to_python_type({
+        quote = convert_to_python_type({
             "symbol": symbol.upper(),
             "price": round(current, 2),
             "change": round(change, 2),
@@ -1345,6 +1396,11 @@ def quick_quote(symbol: str):
             "timestamp": datetime.now().isoformat()
         })
         
+        if len(_quote_cache) > 500:
+            _quote_cache.clear()
+        _quote_cache[symbol] = (time.time(), quote)
+        return quote
+        
     except HTTPException:
         raise
     except Exception as e:
@@ -1352,24 +1408,23 @@ def quick_quote(symbol: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 # ==================== AGENTIC CHAT ENDPOINT ====================
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from agent_service import agent  # Import the agent instance
 
 class ChatRequest(BaseModel):
-    user_id: str
-    message: str
+    user_id: Optional[str] = Field(None, max_length=100)  # Sent by the frontend; not used by the agent
+    message: str = Field(min_length=1, max_length=2000)
     context: Optional[Dict] = None
 
 @app.post("/api/chat", dependencies=[Depends(chat_rate_limit)])
 async def chat_endpoint(request: ChatRequest):
     """
     Agentic Chat Endpoint
-    - Uses Gemini 2.0 Flash + Tools (GetPrice, GetAnalysis, RAG)
-    - Maintains conversational context via agent_service
+    - Uses Groq (openai/gpt-oss-120b) + Tools (GetPrice, GetAnalysis, RAG)
+    - Single-turn: page context is passed in with each message
     """
     try:
         response = await agent.chat(
-            user_id=request.user_id,
             message=request.message,
             context=request.context
         )
@@ -1381,42 +1436,9 @@ async def chat_endpoint(request: ChatRequest):
 @app.post("/admin/train-universal", dependencies=[Depends(require_admin)])
 def train_universal_model(background_tasks: BackgroundTasks):
     """Triggers training on Top Nifty Stocks in background."""
-    def _train_job():
-        print("Starting batch training...")
-        ml_engine = MLEngine()
-        all_X = []
-        all_y = []
-        
-        feature_engine = FeatureEngine()
-        
-        for symbol in TOP_NIFTY_STOCKS:
-            try:
-                print(f"Fetching {symbol}...")
-                ticker = yf.Ticker(symbol)
-                df = ticker.history(period="2y")
-                if len(df) < 200: continue
-                
-                # Apply same feature engineering pipeline
-                df = feature_engine.calculate_technical_features(df)
-                df = feature_engine.calculate_alpha_features(df)
-                df = feature_engine.create_targets(df)
-                
-                X, y, cols = ml_engine.prepare_features(df)
-                if not X.empty and y is not None:
-                    all_X.append(X)
-                    all_y.append(y)
-            except Exception as e:
-                print(f"Skipping {symbol}: {e}")
-                
-        if all_X:
-            combined_X = pd.concat(all_X)
-            combined_y = pd.concat(all_y)
-            ml_engine.train_model(combined_X, combined_y, cols)
-            print("Universal Model Trained & Saved.")
-        else:
-            print("No data collected for training.")
-            
-    background_tasks.add_task(_train_job)
+    if _training_lock.locked():
+        raise HTTPException(status_code=409, detail="Training already in progress")
+    background_tasks.add_task(train_universal_model_job)
     return {"status": "Training started in background"}
 
 @app.post("/admin/push-model", dependencies=[Depends(require_admin)])
@@ -1426,7 +1448,6 @@ def push_model_to_hub(repo_id: str):
     if not token:
          raise HTTPException(status_code=400, detail="HF_TOKEN not found in env.")
          
-    ml_engine = MLEngine()
     success = ml_engine.push_to_hub(repo_id, token)
     if success:
         return {"success": True, "message": f"Model pushed to {repo_id}"}
