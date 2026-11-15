@@ -8,6 +8,7 @@ import Button from '../ui/Button'
 import Badge from '../ui/Badge'
 import toast from 'react-hot-toast'
 import OrderPad from './OrderPad'
+import ExitPlan from './ExitPlan'
 
 export default function TradePanel({ data, symbol, onAskAI }) {
   const { getTrade, recordTrade, getHistory, fetchTransactions } = useWatchlistStore()
@@ -119,6 +120,8 @@ export default function TradePanel({ data, symbol, onAskAI }) {
               </div>
             </div>
           </div>
+
+          <ExitPlan symbol={symbol} trade={portfolioItem} />
 
           {/* Bottom Section: Actions */}
           <div className="bg-slate-50 dark:bg-slate-800/50 p-4 border-t border-slate-100 dark:border-slate-800 flex flex-col gap-3">

@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 from typing import Annotated, Dict, List, Optional
 import warnings
+from pydantic import BaseModel, Field
 import asyncio
 import hmac
 import time
@@ -24,6 +25,7 @@ from async_lru import alru_cache
 from scipy.signal import argrelextrema
 from advanced_analytics import calculate_pressure_index, calculate_breakout_probability
 from ml_engine import MLEngine, TOP_NIFTY_STOCKS, walk_forward_backtest
+from positions import portfolio_summary, review_position
 warnings.filterwarnings('ignore')
 
 # Technical Analysis
@@ -1194,20 +1196,23 @@ RESULTS_DRIFT_HISTORY = {
 }
 
 @alru_cache(maxsize=500, ttl=12 * 3600)
-async def _latest_results_date(symbol: str) -> Optional[pd.Timestamp]:
+async def _results_dates(symbol: str) -> Dict:
+    """Most recent reported results date and the next scheduled one (either may be None)."""
     dates = await asyncio.to_thread(lambda: yf.Ticker(symbol).get_earnings_dates(limit=8))
+    now = pd.Timestamp.now(tz=dates.index.tz)
     reported = dates.dropna(subset=["Reported EPS"])
-    past = reported.index[reported.index <= pd.Timestamp.now(tz=reported.index.tz)]
-    return past.max() if len(past) else None
+    past = reported.index[reported.index <= now]
+    upcoming = dates.index[dates.index > now]
+    return {"last": past.max() if len(past) else None, "next": upcoming.min() if len(upcoming) else None}
 
 @alru_cache(maxsize=1, ttl=3600)
 async def _nifty_closes() -> pd.Series:
     return await asyncio.to_thread(lambda: yf.Ticker(NIFTY_50).history(period="1y")["Close"])
 
 async def fetch_results_inputs(symbol: str):
-    """Latest results date and Nifty closes; (None, None) if Yahoo doesn't provide them (failures aren't cached)."""
+    """Results dates and Nifty closes; (None, None) if Yahoo doesn't provide them (failures aren't cached)."""
     try:
-        return await asyncio.gather(_latest_results_date(symbol), _nifty_closes())
+        return await asyncio.gather(_results_dates(symbol), _nifty_closes())
     except Exception as e:
         print(f"Results data unavailable for {symbol}: {e}")
         return None, None
@@ -1290,7 +1295,7 @@ async def analyze_stock(
         results_task = fetch_results_inputs(symbol)
         
         # Wait for all
-        df, info, news_data, (results_date, nifty_close) = await asyncio.gather(
+        df, info, news_data, (results_dates, nifty_close) = await asyncio.gather(
             df_task, info_task, news_task, results_task
         )
         if not info.get('longName'):
@@ -1304,7 +1309,9 @@ async def analyze_stock(
         response_data_raw = await asyncio.to_thread(
             _build_analysis, symbol, df, info, news_data, account_size, risk_per_trade
         )
-        response_data_raw["results_drift"] = results_drift(df['Close'], nifty_close, results_date)
+        response_data_raw["results_drift"] = results_drift(
+            df['Close'], nifty_close, results_dates["last"] if results_dates else None
+        )
         
         response_data = convert_to_python_type(response_data_raw)
 
@@ -1597,8 +1604,62 @@ def quick_quote(symbol: str):
         print(f"Quote API Error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# ==================== HELD POSITIONS ====================
+@alru_cache(maxsize=200, ttl=300)
+async def _position_history(symbol: str) -> pd.DataFrame:
+    df = await asyncio.to_thread(lambda: yf.Ticker(symbol).history(period="6mo"))
+    if not df.empty:
+        df['ATR'] = AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=14).average_true_range()
+    return df
+
+async def review_holding(symbol: str, quantity: float, average_price: float,
+                         since: Optional[datetime] = None) -> Optional[Dict]:
+    """Exit plan and alerts for one holding, or None if there's no price data for it."""
+    if not symbol.endswith('.NS') and not symbol.endswith('.BO'):
+        symbol = f"{symbol}.NS"
+    try:
+        df, (results_dates, nifty_close) = await asyncio.gather(_position_history(symbol), fetch_results_inputs(symbol))
+    except Exception as e:
+        print(f"Position review error for {symbol}: {e}")
+        return None
+    if df.empty:
+        return None
+    
+    tz = df.index.tz or "Asia/Kolkata"
+    close = df['Close']
+    atr = float(df['ATR'].iloc[-1]) if pd.notna(df['ATR'].iloc[-1]) else float(close.iloc[-1]) * 0.02
+    entry = None
+    if since is not None:
+        entry = pd.Timestamp(since)
+        entry = entry.tz_convert(tz) if entry.tzinfo else entry.tz_localize(tz)
+    next_results = results_dates["next"] if results_dates else None
+    return review_position(
+        symbol, quantity, average_price, close, atr,
+        since=entry,
+        results_drift=results_drift(close, nifty_close, results_dates["last"] if results_dates else None),
+        next_results_date=pd.Timestamp(next_results).tz_convert(tz) if next_results is not None else None,
+        today=pd.Timestamp.now(tz=tz),
+    )
+
+class Holding(BaseModel):
+    symbol: str = Field(pattern=r"^[A-Za-z0-9.&^-]{1,20}$")
+    quantity: float = Field(allow_inf_nan=False)  # negative for a short position
+    average_price: float = Field(gt=0, allow_inf_nan=False)
+    since: Optional[datetime] = None  # when the position was opened, for the trailing stop
+
+class PortfolioReviewRequest(BaseModel):
+    holdings: List[Holding] = Field(min_length=1, max_length=30)
+
+@app.post("/portfolio/review", dependencies=[Depends(require_user)])
+async def portfolio_review(request: PortfolioReviewRequest):
+    """Exit plans, alerts and portfolio-level risk for the user's holdings."""
+    reviews = await asyncio.gather(*(
+        review_holding(h.symbol, h.quantity, h.average_price, h.since) for h in request.holdings if h.quantity != 0
+    ))
+    reviews = [r for r in reviews if r]
+    return convert_to_python_type({"summary": portfolio_summary(reviews), "positions": reviews})
+
 # ==================== AGENTIC CHAT ENDPOINT ====================
-from pydantic import BaseModel, Field
 from agent_service import agent  # Import the agent instance
 
 class ChatRequest(BaseModel):

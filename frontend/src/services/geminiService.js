@@ -31,7 +31,8 @@ class GeminiService {
       const payload = {
         user_id: this.sessionId,
         message: message,
-        context: context || this.currentContext || {}
+        // Only stock contexts are objects; 'general' mode sends an empty context
+        context: [context, this.currentContext].find((c) => c && typeof c === 'object') || {}
       }
 
       const response = await fetch(`${BACKEND_URL}/api/chat`, {

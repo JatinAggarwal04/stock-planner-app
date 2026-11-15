@@ -75,6 +75,21 @@ export const stockService = {
     }
   },
 
+  // Exit plans, alerts and portfolio risk for held positions ({ symbol: { quantity, averagePrice, lastUpdated } })
+  async reviewHoldings(trades) {
+    const holdings = Object.entries(trades)
+      .filter(([, t]) => t.quantity)
+      .map(([symbol, t]) => ({
+        symbol,
+        quantity: t.quantity,
+        average_price: t.averagePrice,
+        since: t.lastUpdated || null,
+      }))
+    if (holdings.length === 0) return null
+    const response = await api.post('/portfolio/review', { holdings })
+    return response.data
+  },
+
   // Batch quotes
   async getBatchQuotes(symbols) {
     const promises = symbols.map((symbol) => 

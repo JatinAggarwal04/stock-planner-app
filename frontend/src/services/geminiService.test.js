@@ -46,6 +46,14 @@ describe('geminiService.sendMessage', () => {
     expect(auth.signOut).toHaveBeenCalledTimes(1)
   })
 
+  it("sends an empty context in general mode instead of the string 'general'", async () => {
+    respond(200, { response: 'ok' })
+    geminiService.startChat('general')
+    await geminiService.sendMessage('hi')
+    expect(JSON.parse(fetch.mock.calls[0][1].body).context).toEqual({})
+    geminiService.resetChat()
+  })
+
   it('explains the rate limit', async () => {
     respond(429)
     expect(await geminiService.sendMessage('hi')).toMatch(/too quickly/)

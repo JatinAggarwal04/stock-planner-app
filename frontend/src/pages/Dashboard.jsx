@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { Plus, MessageCircle } from 'lucide-react'
 import WatchlistGrid from '../components/watchlist/WatchlistGrid'
+import PortfolioRisk from '../components/portfolio/PortfolioRisk'
 import AddStockModal from '../components/watchlist/AddStockModal'
 import ChatInterface from '../components/chatbot/ChatInterface'
 import { useWatchlistStore } from '../context/WatchlistContext'
@@ -44,6 +45,8 @@ export default function Dashboard() {
             </Button>
           </div>
         </div>
+
+        <PortfolioRisk />
 
         {/* Watchlist Grid */}
         {watchlist.length === 0 ? (

@@ -91,6 +91,22 @@ class TradeWiseAgent:
             {
                 "type": "function",
                 "function": {
+                    "name": "review_position",
+                    "description": "Review a position the user already holds: stop-loss, trailing stop, money at risk, alerts and a rule-based HOLD/REVIEW/EXIT status. Use whenever the user holds the stock and asks what to do with it.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string", "description": "The stock symbol."},
+                            "buy_price": {"type": "number", "description": "The user's average buy price (User Avg)."},
+                            "quantity": {"type": "number", "description": "Shares held; negative for a short position."}
+                        },
+                        "required": ["symbol", "buy_price", "quantity"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "search_knowledge_base",
                     "description": "Search the proprietary knowledge base for definitions of financial terms or proprietary metrics.",
                     "parameters": {
@@ -110,7 +126,8 @@ class TradeWiseAgent:
             "get_technical_analysis": self.get_technical_analysis,
             "get_trading_plan": self.get_trading_plan,
             "get_news_analysis": self.get_news_analysis,
-            "search_knowledge_base": self.search_knowledge_base
+            "search_knowledge_base": self.search_knowledge_base,
+            "review_position": self.review_position
         }
         
         # System Prompt
@@ -131,8 +148,10 @@ class TradeWiseAgent:
           predictive, and never use it on its own as the reason to buy, hold or sell.
         - RANGES: Long-term levels are likely ranges (low to high), not targets. Always quote both ends and never
           present the high end alone as an "upside" or expected price.
-        - POSITION: If Context Data shows Position: YES, the user already holds the stock. Base hold/exit/target
-          advice on their average price, quantity and current profit or loss, not on a fresh entry.
+        - POSITION: If Context Data shows Position: YES, the user already holds the stock. Call `review_position`
+          and answer in this order: 1) Status (HOLD / REVIEW / EXIT from the tool; say it is a risk rule, not a
+          prediction), 2) the stop, whether it is trailing, and the rupees at risk or locked in, 3) any alerts,
+          4) results reaction and likely ranges as context. Never treat a holder as a fresh entry.
         - Do NOT hallucinate data.
         
         Disclaimer: State "This is not financial advice."
@@ -201,6 +220,14 @@ class TradeWiseAgent:
                 "sentiment": data.get('sentiment', {}).get('sentiment', 'Neutral'),
                 "headlines": headlines
             })
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    async def review_position(self, symbol: str, buy_price: float, quantity: float):
+        try:
+            from main import review_holding
+            review = await review_holding(symbol, float(quantity), float(buy_price))
+            return json.dumps(review if review else {"error": "No price data for this stock"})
         except Exception as e:
             return json.dumps({"error": str(e)})
 
