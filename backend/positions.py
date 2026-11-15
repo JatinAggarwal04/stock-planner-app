@@ -110,6 +110,8 @@ def portfolio_summary(reviews: List[Dict]) -> Dict:
             r["alerts"].append({"type": "CONCENTRATION", "level": "warning",
                                 "message": f"{r['weight_pct']:.0f}% of your portfolio is in this one stock."})
     total_risk = sum(r["exit_plan"]["risk_to_stop"] for r in reviews)
+    # Positions already through their stop have no "risk to stop" left: their whole value is outside the plan
+    past_stop = [r for r in reviews if any(a["type"] == "STOP_HIT" for a in r["alerts"])]
     return {
         "positions": len(reviews),
         "invested": round(sum(r["invested"] for r in reviews), 2),
@@ -118,5 +120,7 @@ def portfolio_summary(reviews: List[Dict]) -> Dict:
         "risk_to_stops": round(total_risk, 2),
         "risk_to_stops_pct": round(total_risk / exposure * 100, 2),
         "locked_in_profit": round(sum(r["exit_plan"]["locked_in_profit"] for r in reviews), 2),
+        "past_stop_value": round(sum(r["market_value"] for r in past_stop), 2),
+        "past_stop_pct": round(sum(r["market_value"] for r in past_stop) / exposure * 100, 1),
         "needs_attention": sum(r["plan_action"] != "HOLD" for r in reviews),
     }

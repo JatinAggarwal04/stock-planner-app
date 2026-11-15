@@ -89,3 +89,13 @@ def test_single_position_is_not_flagged_as_concentrated():
     only = review_position("ONLY", 10, 100.0, closes(100.0), atr=2.0)
     portfolio_summary([only])
     assert only["alerts"] == []
+
+
+def test_positions_past_their_stop_are_reported_separately():
+    stopped = review_position("STOPPED", 10, 100.0, closes(100.0, 80.0), atr=2.0)  # 1000 notional... now 800
+    fine = review_position("FINE", 2, 100.0, closes(100.0), atr=2.0)
+    summary = portfolio_summary([stopped, fine])
+    assert stopped["exit_plan"]["risk_to_stop"] == 0
+    assert summary["past_stop_value"] == 800.0
+    assert summary["past_stop_pct"] == round(800 / 1000 * 100, 1)
+    assert summary["risk_to_stops"] == 8.0  # only FINE still has risk to its stop

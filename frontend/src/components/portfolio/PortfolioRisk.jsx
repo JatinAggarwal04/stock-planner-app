@@ -55,7 +55,15 @@ export default function PortfolioRisk() {
           value={signedCurrency(summary.pnl)}
           tone={summary.pnl >= 0 ? 'text-success-600 dark:text-success-400' : 'text-danger-600 dark:text-danger-400'}
         />
-        <Stat label="At risk to stops" value={`${formatters.currency(summary.risk_to_stops)} (${summary.risk_to_stops_pct}%)`} />
+        {summary.past_stop_value > 0 ? (
+          <Stat
+            label="Past their stop"
+            value={`${formatters.currency(summary.past_stop_value)} (${summary.past_stop_pct}%)`}
+            tone="text-danger-600 dark:text-danger-400"
+          />
+        ) : (
+          <Stat label="At risk to stops" value={`${formatters.currency(summary.risk_to_stops)} (${summary.risk_to_stops_pct}%)`} />
+        )}
         <Stat label="Profit locked in" value={formatters.currency(summary.locked_in_profit)} />
       </div>
 
