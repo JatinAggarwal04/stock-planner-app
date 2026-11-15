@@ -72,7 +72,7 @@ class MLEngine:
         xgb.fit(X_scaled, y)
         rf = RandomForestClassifier(
             n_estimators=200, max_depth=8, min_samples_split=10,
-            min_samples_leaf=5, random_state=42
+            min_samples_leaf=5, random_state=42, n_jobs=-1
         )
         rf.fit(X_scaled, y)
         return scaler, xgb, rf
@@ -169,12 +169,12 @@ class MLEngine:
 
 
 def walk_forward_backtest(X: pd.DataFrame, y: pd.Series, dates: pd.Series,
-                          n_folds: int = 12, test_days: int = 252) -> Dict:
+                          n_folds: int = 12, test_days: int = 252, embargo_days: int = 1) -> Dict:
     """Out-of-sample evaluation the way the app actually uses the model.
 
     The last `test_days` trading days are split into `n_folds` consecutive blocks. Each block is predicted by a
-    model trained only on dates before it, minus one day: a training row's label is the *next* day's return,
-    so the last day before a block would otherwise leak the block's first close into training.
+    model trained only on dates before it, minus `embargo_days`: a training row's label looks that many days
+    ahead, so the days just before a block would otherwise leak the block's prices into training.
     Rows from all stocks on the same date always land on the same side of the split.
     """
     dates = pd.Series(pd.to_datetime(dates).values, index=X.index)
@@ -185,7 +185,7 @@ def walk_forward_backtest(X: pd.DataFrame, y: pd.Series, dates: pd.Series,
     probabilities, actual = [], []
     for fold in np.array_split(unique_dates[-test_days:], n_folds):
         fold_start = np.searchsorted(unique_dates, fold[0])
-        train_mask = (dates < unique_dates[fold_start - 1]).values  # 1-day embargo
+        train_mask = (dates < unique_dates[fold_start - embargo_days]).values
         test_mask = dates.isin(fold).values
         scaler, xgb, rf = MLEngine._fit(X[train_mask], y[train_mask])
         probabilities.append(MLEngine._ensemble_probability(scaler, xgb, rf, X[test_mask]))
@@ -211,4 +211,9 @@ def walk_forward_backtest(X: pd.DataFrame, y: pd.Series, dates: pd.Series,
         "bullish_hit_rate": pct(up[bullish].mean()) if bullish.any() else None,
         "bearish_calls": int(bearish.sum()),
         "bearish_hit_rate": pct(1 - up[bearish].mean()) if bearish.any() else None,
+        # Per-block AUC: a real edge shows up in most months, not just one lucky stretch
+        "fold_aucs": [
+            round(float(roc_auc_score(a, p)), 3) if 0 < a.mean() < 1 else None
+            for p, a in zip(probabilities, actual)
+        ],
     }
