@@ -95,11 +95,56 @@ def test_long_term_view_detects_uptrend():
     assert view["indicators"]["is_golden_cross"] is True
 
 
+def prices_from_path(path):
+    """OHLCV frame whose closes follow `path`, with a 1% high/low band."""
+    close = np.asarray(path, dtype=float)
+    return pd.DataFrame({
+        "Open": close, "High": close * 1.01, "Low": close * 0.99, "Close": close,
+        "Volume": np.full(len(close), 100_000),
+    })
+
+
+def wave(*legs):
+    """Piecewise-linear path through the given turning points, 20 bars per leg."""
+    points = []
+    for start, end in zip(legs, legs[1:]):
+        points.extend(np.linspace(start, end, 20, endpoint=False))
+    points.append(legs[-1])
+    return points
+
+
 def test_support_resistance_shape():
     levels = main.SupportResistanceAnalyzer.find_levels(synthetic_prices())
     assert levels["trend"] in ("Bullish", "Bearish", "Neutral")
     for value in levels["all_support_levels"]:
         assert value > 0
+
+
+def test_resistance_found_from_older_highs():
+    # Peaked at 160 months ago, now 135: the old code only looked at the last 50 days and returned None
+    df = prices_from_path(wave(100, 160, 120, 150, 110, 140, 130, 135) + [135] * 60)
+    levels = main.SupportResistanceAnalyzer.find_levels(df)
+    assert levels["nearest_resistance"] is not None
+    assert all(r > 135 for r in levels["all_resistance_levels"])
+    assert all(s < 135 for s in levels["all_support_levels"])
+    # Nearest first
+    assert levels["all_resistance_levels"] == sorted(levels["all_resistance_levels"])
+    assert levels["all_support_levels"] == sorted(levels["all_support_levels"], reverse=True)
+
+
+def test_broken_resistance_becomes_support():
+    # Topped at 120 twice, then broke out to 150: 120 is now support
+    df = prices_from_path(wave(100, 120, 105, 120, 110, 150) + [150] * 10)
+    levels = main.SupportResistanceAnalyzer.find_levels(df)
+    assert any(abs(s - 121.2) < 3 for s in levels["all_support_levels"])  # 120 high + 1% band
+
+
+def test_new_high_falls_back_to_52_week_high():
+    # Straight uptrend: no swing high above the price, but today's intraday high is
+    df = prices_from_path(np.linspace(100, 200, 260))
+    levels = main.SupportResistanceAnalyzer.find_levels(df)
+    assert levels["nearest_resistance"] == round(200 * 1.01, 2)
+    assert levels["nearest_support"] is not None
 
 
 def test_prepare_features_without_indicators_returns_empty():

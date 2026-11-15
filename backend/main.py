@@ -7,6 +7,7 @@ import yfinance as yf
 import feedparser
 import gc
 import math
+import re
 import jwt
 import threading
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Header, Query
@@ -165,8 +166,8 @@ class SentimentAnalyzer:
             return neutral_sentiment()
         
         classifier = await asyncio.to_thread(get_finbert)
-        # Process only top 5 headlines; each result lists every label with its score
-        results = await asyncio.to_thread(classifier, text_list[:5], truncation=True)
+        # Process at most 8 headlines; each result lists every label with its score
+        results = await asyncio.to_thread(classifier, text_list[:8], truncation=True)
         
         scores = []
         confidences = []
@@ -205,23 +206,21 @@ class SentimentAnalyzer:
 # ==================== SUPPORT/RESISTANCE DETECTOR ====================
 class SupportResistanceAnalyzer:
     @staticmethod
-    def find_levels(df: pd.DataFrame, window: int = 20) -> Dict:
-        """Detect support and resistance levels using local extrema"""
+    def find_levels(df: pd.DataFrame, window: int = 5, lookback: int = 252) -> Dict:
+        """Support/resistance from swing highs and lows over the last year.
         
-        highs = df['High'].values
-        lows = df['Low'].values
-        close = df['Close'].values
+        A swing point is the highest high / lowest low within `window` bars on each side. Highs and lows are
+        clustered (within 2%) into price levels; levels above the price are resistance and levels below are
+        support (a broken resistance becomes support and vice versa). If price is beyond every swing level,
+        the 52-week high/low is used instead.
+        """
+        recent = df.tail(lookback)
+        highs = recent['High'].values
+        lows = recent['Low'].values
+        current_price = float(df['Close'].iloc[-1])
         
-        # Find local maxima (resistance) and minima (support)
-        resistance_idx = argrelextrema(highs, np.greater, order=window)[0]
-        support_idx = argrelextrema(lows, np.less, order=window)[0]
-        
-        # Get recent levels (last 50 days)
-        recent_days = min(50, len(df))
-        resistance_levels = highs[resistance_idx[resistance_idx >= len(df) - recent_days]]
-        support_levels = lows[support_idx[support_idx >= len(df) - recent_days]]
-        
-        current_price = float(close[-1])
+        swing_highs = highs[argrelextrema(highs, np.greater_equal, order=window)[0]]
+        swing_lows = lows[argrelextrema(lows, np.less_equal, order=window)[0]]
         
         # Cluster nearby levels
         def cluster_levels(levels, threshold=0.02):
@@ -242,12 +241,20 @@ class SupportResistanceAnalyzer:
             clustered.append(float(np.mean(current_cluster)))
             return clustered
         
-        resistance_clustered = cluster_levels(resistance_levels)
-        support_clustered = cluster_levels(support_levels)
+        levels = cluster_levels(np.concatenate([swing_highs, swing_lows]))
+        resistance_levels = sorted(l for l in levels if l > current_price)  # nearest first
+        support_levels = sorted((l for l in levels if l < current_price), reverse=True)  # nearest first
         
-        # Find nearest levels
-        nearest_resistance = min([r for r in resistance_clustered if r > current_price], default=None)
-        nearest_support = max([s for s in support_clustered if s < current_price], default=None)
+        # Price beyond every swing level: fall back to the 52-week extremes
+        week52_high = float(recent['High'].max())
+        week52_low = float(recent['Low'].min())
+        if not resistance_levels and week52_high > current_price:
+            resistance_levels = [week52_high]
+        if not support_levels and week52_low < current_price:
+            support_levels = [week52_low]
+        
+        nearest_resistance = resistance_levels[0] if resistance_levels else None
+        nearest_support = support_levels[0] if support_levels else None
         
         # Calculate breakout probability
         resistance_distance = None
@@ -279,13 +286,13 @@ class SupportResistanceAnalyzer:
         return {
             "current_price": round(current_price, 2),
             "nearest_resistance": round(nearest_resistance, 2) if nearest_resistance else None,
-            "resistance_distance_pct": round(resistance_distance, 2) if resistance_distance else None,
+            "resistance_distance_pct": round(resistance_distance, 2) if resistance_distance is not None else None,
             "resistance_breakout_probability": round(resistance_breakout_prob, 1),
             "nearest_support": round(nearest_support, 2) if nearest_support else None,
-            "support_distance_pct": round(support_distance, 2) if support_distance else None,
+            "support_distance_pct": round(support_distance, 2) if support_distance is not None else None,
             "support_breakdown_probability": round(support_breakdown_prob, 1),
-            "all_resistance_levels": [round(r, 2) for r in sorted(resistance_clustered, reverse=True)[:5]],
-            "all_support_levels": [round(s, 2) for s in sorted(support_clustered, reverse=True)[:5]],
+            "all_resistance_levels": [round(r, 2) for r in resistance_levels[:5]],
+            "all_support_levels": [round(s, 2) for s in support_levels[:5]],
             "trend": "Bullish" if nearest_resistance and resistance_breakout_prob > 60 else "Bearish" if nearest_support and support_breakdown_prob > 60 else "Neutral"
         }
 
@@ -862,10 +869,71 @@ def root():
         "examples": ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS"]
     }
 
+# Headlines that are price/quote pages rather than news
+QUOTE_PAGE = re.compile(
+    r"(share|stock) price|price today|stock quote|stock forecast|quote (and|&) history|news, quote|yahoo!? finance|\bETF\b",
+    re.IGNORECASE,
+)
+COMPANY_SUFFIX = re.compile(r"\s+(limited|ltd\.?|inc\.?|corporation|corp\.?)$", re.IGNORECASE)
+
+def clean_company_name(company_name: Optional[str], symbol: str) -> Optional[str]:
+    """'Reliance Industries Limited' -> 'Reliance Industries'; None when Yahoo only echoed the ticker."""
+    if not company_name or company_name.upper() in (symbol.upper(), symbol.split('.')[0].upper()):
+        return None
+    return COMPANY_SUFFIX.sub('', company_name.strip()) or None
+
+def company_search_terms(symbol: str, company_name: Optional[str]) -> List[str]:
+    """Phrases a relevant headline must contain (case-sensitive), e.g. ['RELIANCE', 'Reliance Industries'].
+    The bare ticker word (e.g. 'Reliance') is only used when it isn't just the start of the company name,
+    otherwise 'Reliance Power' and 'reliance on…' headlines slip in."""
+    base = symbol.split('.')[0]
+    terms = {base.upper()}
+    name = clean_company_name(company_name, symbol)
+    if name:
+        terms.add(name)
+    if not name or name.split()[0].lower() != base.lower():
+        terms.add(base.capitalize())  # e.g. 'Groww' for Billionbrains Garage Ventures
+    return sorted(terms)
+
+def relevant_headlines(titles: List[str], terms: List[str], max_items: int) -> List[str]:
+    """Drop quote pages, duplicates and headlines that don't name the company."""
+    pattern = re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\b")
+    seen, kept = set(), []
+    for title in titles:
+        key = headline_text(title).lower()
+        if key in seen or QUOTE_PAGE.search(title) or not pattern.search(title):
+            continue
+        seen.add(key)
+        kept.append(title)
+        if len(kept) == max_items:
+            break
+    return kept
+
+def headline_text(title: str) -> str:
+    """Strip the trailing ' - Source' Google News adds, so FinBERT scores only the headline."""
+    head, sep, source = title.rpartition(" - ")
+    return head if sep and len(source) <= 40 else title
+
+@alru_cache(maxsize=500, ttl=24 * 3600)
+async def _company_name(symbol: str) -> Optional[str]:
+    """Company name via Yahoo search (Ticker.info often comes back without names on the Space)."""
+    try:
+        quotes = await asyncio.to_thread(yahoo_search_quotes, symbol.split('.')[0], 10)
+        for quote in quotes:
+            if quote.get('symbol', '').upper() == symbol.upper():
+                return quote.get('longname') or quote.get('shortname')
+    except Exception as e:
+        print(f"Company name lookup error: {e}")
+    return None
+
 @alru_cache(maxsize=100, ttl=3600)  # Cache for 1 hour (failures raise, so they aren't cached)
 async def _fetch_headlines(symbol: str, max_items: int):
     import urllib.parse
-    search_query = urllib.parse.quote(f"{symbol} stock news India when:7d")
+    company_name = await _company_name(symbol)
+    terms = company_search_terms(symbol, company_name)
+    name = clean_company_name(company_name, symbol)
+    name_query = f'"{name}" OR ' if name else ""
+    search_query = urllib.parse.quote(f'{name_query}{symbol.split(".")[0]} share news when:7d')
     rss_url = f"https://news.google.com/rss/search?q={search_query}&hl=en-IN&gl=IN&ceid=IN:en"
     
     # Fetch with a timeout (feedparser's own fetch has none), then parse in a thread
@@ -873,14 +941,16 @@ async def _fetch_headlines(symbol: str, max_items: int):
     response.raise_for_status()
     feed = await asyncio.to_thread(feedparser.parse, response.content)
     
-    return [{"title": x.title, "link": x.link, "published": x.published} for x in feed.entries[:max_items]]
+    entries = {x.title: x for x in feed.entries[:30]}
+    keep = relevant_headlines(list(entries), terms, max_items)
+    return [{"title": t, "link": entries[t].link, "published": entries[t].published} for t in keep]
 
 @alru_cache(maxsize=100, ttl=3600)  # Cache for 1 hour (failures raise, so they aren't cached)
 async def _headline_sentiment(headlines: tuple):
     sentiment_analyzer = SentimentAnalyzer()
     return await asyncio.wait_for(sentiment_analyzer.analyze_finbert(list(headlines)), timeout=15)
 
-async def fetch_stock_news(symbol: str, max_items: int = 5):
+async def fetch_stock_news(symbol: str, max_items: int = 8):
     """Fetches latest news and performs sentiment analysis (Async + Cached)."""
     try:
         news = await _fetch_headlines(symbol, max_items)
@@ -892,7 +962,7 @@ async def fetch_stock_news(symbol: str, max_items: int = 5):
         return {"news": [], "sentiment": neutral_sentiment()}
     
     try:
-        sentiment = await _headline_sentiment(tuple(x['title'] for x in news))
+        sentiment = await _headline_sentiment(tuple(headline_text(x['title']) for x in news))
     except Exception as e:
         print(f"Sentiment error: {e}")
         sentiment = neutral_sentiment()
@@ -1121,6 +1191,9 @@ async def analyze_stock(
         
         # Wait for all
         df, info, news_data = await asyncio.gather(df_task, info_task, news_task)
+        if not info.get('longName'):
+            # Ticker.info often lacks names on the Space; the news fetch already looked it up (cached)
+            info = {**info, 'longName': await _company_name(symbol) or symbol}
         
         if df.empty or len(df) < 200:
             raise HTTPException(status_code=404, detail="Insufficient data")
@@ -1190,35 +1263,30 @@ async def personalized_analysis(
             raise HTTPException(status_code=429, detail="Rate limited. Please try again in a few minutes.")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+def yahoo_search_quotes(query: str, count: int = 20) -> List[Dict]:
+    """Raw quote matches from Yahoo Finance search."""
+    response = requests.get(
+        "https://query2.finance.yahoo.com/v1/finance/search",
+        params={
+            'q': query,
+            'quotesCount': count,
+            'newsCount': 0,
+            'enableFuzzyQuery': False,
+            'quotesQueryId': 'tss_match_phrase_query'
+        },
+        headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        },
+        timeout=10
+    )
+    return response.json().get('quotes', [])
+
 @app.get("/search", dependencies=[Depends(require_user)])
 def search_stocks(query: str):
     """Search for stocks using Yahoo Finance API"""
     try:
-        url = "https://query2.finance.yahoo.com/v1/finance/search"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        response = requests.get(
-            url, 
-            params={
-                'q': query,
-                'quotesCount': 20, 
-                'newsCount': 0,
-                'enableFuzzyQuery': False,
-                'quotesQueryId': 'tss_match_phrase_query'
-            },
-            headers=headers,
-            timeout=10
-        )
-        
-        data = response.json()
-        
-        if 'quotes' not in data:
-            return []
-            
         results = []
-        for quote in data['quotes']:
+        for quote in yahoo_search_quotes(query):
             symbol = quote.get('symbol', '')
             
             # Filter for Indian stocks (NSE/BSE)

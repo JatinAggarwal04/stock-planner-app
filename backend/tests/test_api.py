@@ -39,6 +39,15 @@ def test_analyze_with_trained_model(client, trained_model):
     assert os.path.getmtime(model_path) == modified
 
 
+def test_analysis_uses_search_name_when_yahoo_info_has_none(client, monkeypatch):
+    async def name(symbol):
+        return "Test Industries Limited"
+
+    monkeypatch.setattr(FakeTicker, "info", property(lambda self: {"marketCap": 1}))
+    monkeypatch.setattr(main, "_company_name", name)
+    assert client.get("/analyze/NAMED.NS").json()["company_name"] == "Test Industries Limited"
+
+
 def test_personalized_does_not_leak_into_shared_cache(client):
     response = client.get("/analyze/TEST.NS/personalized", params={"buy_price": 100, "quantity": 10})
     assert response.status_code == 200
