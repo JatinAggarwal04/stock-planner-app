@@ -263,7 +263,20 @@ class TradeWiseAgent:
             
             # 2. Handle Tool Calls
             if tool_calls:
-                messages.append(response_message) # Extend conversation with assistant's tool request
+                # Send back only the fields Groq accepts on input; the response object also carries
+                # output-only fields (reasoning, annotations, executed_tools) that make the follow-up call fail
+                messages.append({
+                    "role": "assistant",
+                    "content": response_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {"name": tool_call.function.name, "arguments": tool_call.function.arguments},
+                        }
+                        for tool_call in tool_calls
+                    ],
+                })
                 
                 for tool_call in tool_calls:
                     function_name = tool_call.function.name

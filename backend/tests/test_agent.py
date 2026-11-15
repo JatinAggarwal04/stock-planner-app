@@ -105,6 +105,13 @@ def test_chat_runs_tool_and_returns_final_answer(monkeypatch):
     assert calls == ["TCS.NS"]
     tool_message = requests[1]["messages"][-1]
     assert tool_message["role"] == "tool" and tool_message["content"] == '{"price": 1}'
+    # The assistant turn sent back must be a plain message, not the raw response object
+    assert requests[1]["messages"][-2] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "call-1", "type": "function",
+                        "function": {"name": "get_stock_price", "arguments": '{"symbol": "TCS.NS"}'}}],
+    }
     assert any("Active Stock: TCS.NS" in m["content"] for m in requests[0]["messages"] if isinstance(m, dict))
 
 
