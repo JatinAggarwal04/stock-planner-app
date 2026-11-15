@@ -50,18 +50,23 @@ export default function StockDetail() {
   // Chat context state
   const [chatContext, setChatContext] = useState(null)
 
+  // What the assistant needs on every chat about this stock, including the user's holding
+  const stockContext = () => ({
+    type: 'stock',
+    symbol: analysis?.symbol || symbol,
+    current_price: analysis?.current_price || 0,
+    signal: analysis?.recommendation?.signal || 'Neutral',
+    has_position: !!trade && trade.quantity !== 0,
+    buy_price: trade?.averagePrice || 0,
+    quantity: trade?.quantity || 0,
+  })
+
   const handleAskAI = () => {
     if (!analysis) return
 
     // Prepare robust context for the AI
     const context = {
-      type: 'stock',
-      symbol: analysis.symbol,
-      current_price: analysis.current_price,
-      signal: analysis.recommendation?.signal || 'Neutral',
-      has_position: !!trade,
-      buy_price: trade?.averagePrice || 0,
-      quantity: trade?.quantity || 0,
+      ...stockContext(),
       // Pass the trading plan calculated by the backend (Handle both base and personalized Structure)
       trading_plan: analysis.personalized_recommendation?.trading_plan || analysis.trading_plan || null,
       personalized_recommendation: analysis.personalized_recommendation || null,
@@ -74,12 +79,7 @@ export default function StockDetail() {
 
   // Open generic chat
   const handleOpenChat = () => {
-    setChatContext({
-      type: 'stock',
-      symbol: symbol,
-      current_price: analysis?.current_price || 0,
-      signal: analysis?.recommendation?.signal || 'Neutral'
-    })
+    setChatContext(stockContext())
     setShowChat(true)
   }
 
@@ -180,7 +180,7 @@ export default function StockDetail() {
       {showChat && (
         <ChatInterface
           onClose={() => setShowChat(false)}
-          context={chatContext || { type: 'stock', symbol, current_price: analysis?.current_price }}
+          context={chatContext || stockContext()}
         />
       )}
     </div>

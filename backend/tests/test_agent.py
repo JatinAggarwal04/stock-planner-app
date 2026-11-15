@@ -44,6 +44,24 @@ def test_context_keeps_only_whitelisted_values():
     )
 
 
+@pytest.mark.parametrize(
+    "has_position, quantity, expected",
+    [
+        (True, 9, "Position: YES, 9 shares long"),
+        (True, -5, "Position: YES, 5 shares short"),
+        (True, None, "Position: YES"),
+        (False, 9, "Position: NO"),
+    ],
+)
+def test_context_includes_the_users_holding(has_position, quantity, expected):
+    message = TradeWiseAgent._context_message({
+        "symbol": "GROWW.NS", "current_price": 224.95, "has_position": has_position,
+        "buy_price": 219, "quantity": quantity,
+    })
+    assert f"\n{expected}\n" in message
+    assert "User Avg: 219.0" in message
+
+
 def test_trading_plan_tool_returns_plan():
     plan = json.loads(asyncio.run(agent.get_trading_plan("TEST.NS")))
     assert {"intraday", "swing", "long_term"} <= plan.keys()

@@ -126,6 +126,8 @@ class TradeWiseAgent:
         - ALWAYS use `get_technical_analysis` or `get_trading_plan` for analysis.
         - ALWAYS use `search_knowledge_base` for questions about terms like "CPR", "Impact Score", "Swing Targets".
         - RISK: If stops are deep (>7%), recommend 'Capital Protection Rule'.
+        - POSITION: If Context Data shows Position: YES, the user already holds the stock. Base hold/exit/target
+          advice on their average price, quantity and current profit or loss, not on a fresh entry.
         - Do NOT hallucinate data.
         
         Disclaimer: State "This is not financial advice."
@@ -218,10 +220,16 @@ class TradeWiseAgent:
                 return None
             return round(value, 2) if math.isfinite(value) else None
 
+        position = "NO"
+        quantity = number(context.get('quantity'))
+        if context.get('has_position') is True:
+            position = "YES"
+            if quantity:
+                position += f", {abs(quantity):g} shares {'short' if quantity < 0 else 'long'}"
         ctx_msg = (
             f"Active Stock: {symbol.upper()}\n"
             f"Price: {number(context.get('current_price'))}\n"
-            f"Position: {'YES' if context.get('has_position') is True else 'NO'}\n"
+            f"Position: {position}\n"
             f"User Avg: {number(context.get('buy_price'))}"
         )
         rec = context.get('personalized_recommendation')
