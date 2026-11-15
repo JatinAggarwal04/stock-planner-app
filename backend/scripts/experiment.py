@@ -12,6 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from scipy.stats import spearmanr
+from sklearn.linear_model import LinearRegression
+from xgboost import XGBRegressor
 
 from main import FEATURE_COLS, FeatureEngine
 from ml_engine import TOP_NIFTY_STOCKS, walk_forward_backtest
@@ -83,11 +86,111 @@ def run(data, features, target, horizon):
     return report
 
 
+# ---------- A: forecast next-10-day volatility ----------
+
+RISK_HORIZON = 10
+RISK_FEATURES = ["log_vol_5", "log_vol_20", "log_vol_60", "log_atr_pct", "log_range", "BB_Width",
+                 "Volume_Ratio", "abs_ret_1", "log_vix", "log_mkt_vol_20"]
+
+
+def add_risk_columns(df, nifty, vix):
+    returns = np.log(df["Close"]).diff()
+    nifty_returns = np.log(nifty["Close"].reindex(df.index).ffill()).diff()
+    df["log_vol_5"] = np.log(returns.rolling(5).std())
+    df["log_vol_20"] = np.log(returns.rolling(20).std())
+    df["log_vol_60"] = np.log(returns.rolling(60).std())
+    df["log_atr_pct"] = np.log(df["ATR"] / df["Close"])
+    df["log_range"] = np.log((df["High"] - df["Low"]) / df["Close"])
+    df["abs_ret_1"] = returns.abs()
+    df["log_vix"] = np.log(vix["Close"].reindex(df.index).ffill())
+    df["log_mkt_vol_20"] = np.log(nifty_returns.rolling(20).std())
+    # Target: std of the next 10 daily log returns (needs all 10 days)
+    future = pd.concat([returns.shift(-k) for k in range(1, RISK_HORIZON + 1)], axis=1)
+    df["log_future_vol"] = np.log(future.std(axis=1).where(future.notna().all(axis=1)))
+    return df
+
+
+def risk_suite(data, n_folds=12, test_days=252):
+    """Walk-forward MAE of log volatility (≈ relative error): model vs calibrated simple baselines."""
+    cols = RISK_FEATURES + ["log_future_vol"]
+    frame = data[cols].replace([np.inf, -np.inf], np.nan).dropna()
+    dates = pd.Series(frame.index, index=frame.index)
+    unique_dates = np.sort(dates.unique())
+    errors = {"past 20d vol": [], "ATR %": [], "model": []}
+    fold_wins = 0
+    for fold in np.array_split(unique_dates[-test_days:], n_folds):
+        start = np.searchsorted(unique_dates, fold[0])
+        train = frame[(dates < unique_dates[start - RISK_HORIZON]).values]
+        test = frame[dates.isin(fold).values]
+        y_train, y_test = train["log_future_vol"], test["log_future_vol"]
+        fold_errors = {}
+        # Baselines are calibrated (linear fit) on the same training data, so the comparison is fair
+        for name, col in (("past 20d vol", "log_vol_20"), ("ATR %", "log_atr_pct")):
+            fit = LinearRegression().fit(train[[col]], y_train)
+            fold_errors[name] = np.abs(fit.predict(test[[col]]) - y_test).mean()
+        model = XGBRegressor(n_estimators=300, learning_rate=0.03, max_depth=4, subsample=0.8,
+                             colsample_bytree=0.8, random_state=42)
+        model.fit(train[RISK_FEATURES], y_train)
+        fold_errors["model"] = np.abs(model.predict(test[RISK_FEATURES]) - y_test).mean()
+        for name, err in fold_errors.items():
+            errors[name].append(err)
+        fold_wins += fold_errors["model"] < min(fold_errors["past 20d vol"], fold_errors["ATR %"])
+
+    mae = {name: float(np.mean(v)) for name, v in errors.items()}
+    best_baseline = min(mae["past 20d vol"], mae["ATR %"])
+    print("\n### A: next-10-day volatility forecast (MAE of log vol, lower is better)")
+    for name, value in mae.items():
+        print(f"- {name}: {value:.4f}")
+    print(f"- model improvement vs best baseline: {(1 - mae['model'] / best_baseline) * 100:.1f}%")
+    print(f"- months where the model beat both baselines: {fold_wins}/{n_folds}", flush=True)
+
+
+# ---------- B: monthly cross-sectional factor ranking ----------
+
+def factor_suite(frames, symbols, step=21):
+    """Rank IC of momentum (12-1) and low volatility vs next-month return relative to the Nifty."""
+    nifty = frames["^NSEI"]["Close"]
+    closes = pd.DataFrame({s: frames[s]["Close"] for s in symbols if s in frames}).reindex(nifty.index).ffill()
+    returns = closes.pct_change()
+    factors = {
+        "momentum 12-1": closes.shift(21) / closes.shift(252) - 1,
+        "low volatility": -returns.rolling(60).std(),
+    }
+    factors["combined"] = sum(f.rank(axis=1) for f in factors.values())
+    forward = closes.shift(-step) / closes - 1
+    excess = forward.sub(nifty.shift(-step) / nifty - 1, axis=0)
+
+    dates = closes.index[252::step]
+    dates = dates[dates <= closes.index[-step - 1]]  # need a full month ahead
+    print(f"\n### B: monthly factor ranking ({len(dates)} months, {closes.shape[1]} stocks; current constituents only)")
+    for name, factor in factors.items():
+        ics, spreads = [], []
+        for d in dates:
+            pair = pd.concat([factor.loc[d], excess.loc[d]], axis=1, keys=["factor", "excess"]).dropna()
+            if len(pair) < 20:
+                continue
+            ics.append(spearmanr(pair["factor"], pair["excess"]).statistic)
+            ranked = pair.sort_values("factor")
+            fifth = len(ranked) // 5
+            spreads.append(ranked["excess"].iloc[-fifth:].mean() - ranked["excess"].iloc[:fifth].mean())
+        ics = np.array(ics)
+        t_stat = ics.mean() / ics.std(ddof=1) * np.sqrt(len(ics))
+        print(f"- {name}: mean IC {ics.mean():.3f}, t-stat {t_stat:.2f}, IC>0 in {(ics > 0).mean() * 100:.0f}% of months, "
+              f"top-minus-bottom fifth {np.mean(spreads) * 100:.2f}%/month", flush=True)
+
+
 def main():
     frames = download(NIFTY_50 + [s for s in TOP_NIFTY_STOCKS if s not in NIFTY_50])
     print(f"downloaded {len(frames)} series")
     data = build(frames, list(dict.fromkeys(NIFTY_50 + TOP_NIFTY_STOCKS)))
     current = data[data["Symbol"].isin(TOP_NIFTY_STOCKS)]
+
+    nifty50 = data[data["Symbol"].isin(NIFTY_50)]
+    risk_data = pd.concat(
+        add_risk_columns(group.copy(), frames["^NSEI"], frames["^INDIAVIX"]) for _, group in nifty50.groupby("Symbol")
+    )
+    risk_suite(risk_data)
+    factor_suite(frames, NIFTY_50)
 
     experiments = [
         ("current: 11 stocks, next day", current, FEATURE_COLS, "next_day_up_0.2pct", 1),

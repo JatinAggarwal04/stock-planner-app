@@ -170,7 +170,9 @@ class TradeWiseAgent:
                 "rsi": analysis.get("technical_analysis", {}).get("rsi"),
                 "trend": analysis.get("technical_analysis", {}).get("trend"),
                 "support": analysis.get("support_resistance", {}).get("nearest_support"),
-                "resistance": analysis.get("support_resistance", {}).get("nearest_resistance")
+                "resistance": analysis.get("support_resistance", {}).get("nearest_resistance"),
+                # Recent quarterly results reaction and how similar reactions drifted historically (or None)
+                "results_drift": analysis.get("results_drift"),
             }
             return json.dumps(summary)
         except Exception as e:

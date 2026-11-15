@@ -1172,6 +1172,72 @@ def _build_analysis(symbol: str, df: pd.DataFrame, info: Dict, news_data: Dict,
     
     return response_data_raw
 
+# ==================== POST-RESULTS DRIFT ====================
+# The market's reaction to quarterly results (stock vs Nifty, from the close before to the close after the
+# announcement) predicts the stock vs the Nifty over the next 60 trading days. Measured with scripts/events.py
+# on 2,231 Nifty 50 announcements (2015-2026): IC 0.072, t-stat 3.23 across 47 earnings seasons.
+RESULTS_DRIFT_DAYS = 60
+REACTION_CUTOFFS = (-0.01547, 0.01359)  # thirds of historical reactions (stock minus Nifty)
+# How each third did vs the Nifty over the next 60 trading days. Absolute levels are flattered by survivorship
+# (the study uses today's Nifty 50 members), so the app shows the groups side by side rather than as returns.
+RESULTS_DRIFT_HISTORY = {
+    "strong_negative": {"beat_nifty_pct": 49, "median_60d_vs_nifty_pct": -0.29},
+    "neutral": {"beat_nifty_pct": 54, "median_60d_vs_nifty_pct": 1.11},
+    "strong_positive": {"beat_nifty_pct": 58, "median_60d_vs_nifty_pct": 2.08},
+}
+
+@alru_cache(maxsize=500, ttl=12 * 3600)
+async def _latest_results_date(symbol: str) -> Optional[pd.Timestamp]:
+    dates = await asyncio.to_thread(lambda: yf.Ticker(symbol).get_earnings_dates(limit=8))
+    reported = dates.dropna(subset=["Reported EPS"])
+    past = reported.index[reported.index <= pd.Timestamp.now(tz=reported.index.tz)]
+    return past.max() if len(past) else None
+
+@alru_cache(maxsize=1, ttl=3600)
+async def _nifty_closes() -> pd.Series:
+    return await asyncio.to_thread(lambda: yf.Ticker(NIFTY_50).history(period="1y")["Close"])
+
+async def fetch_results_inputs(symbol: str):
+    """Latest results date and Nifty closes; (None, None) if Yahoo doesn't provide them (failures aren't cached)."""
+    try:
+        return await asyncio.gather(_latest_results_date(symbol), _nifty_closes())
+    except Exception as e:
+        print(f"Results data unavailable for {symbol}: {e}")
+        return None, None
+
+def results_drift(close: pd.Series, nifty_close: pd.Series, results_date) -> Optional[Dict]:
+    """Post-results drift context for a stock, or None when the last results are older than 60 trading days."""
+    if results_date is None or nifty_close is None or None in REACTION_CUTOFFS:
+        return None
+    # Compare calendar days in the exchange's time zone (Yahoo may return the date in another zone)
+    tz = close.index.tz or "Asia/Kolkata"
+    days = close.index.tz_convert(tz).tz_localize(None).normalize() if close.index.tz else close.index.normalize()
+    announced = pd.Timestamp(results_date)
+    announced = announced.tz_convert(tz) if announced.tzinfo else announced
+    i = days.searchsorted(announced.tz_localize(None).normalize())
+    if i < 1 or i + 1 >= len(close):
+        return None  # the reaction window (day before to day after) isn't complete yet
+    days_since = len(close) - 1 - (i + 1)
+    if days_since > RESULTS_DRIFT_DAYS:
+        return None
+    nifty = nifty_close.copy()
+    nifty.index = (nifty.index.tz_convert(tz).tz_localize(None) if nifty.index.tz else nifty.index).normalize()
+    def vs_nifty(a, b):
+        n0, n1 = nifty.asof(days[a]), nifty.asof(days[b])
+        return close.iloc[b] / close.iloc[a] - 1 - (n1 / n0 - 1)
+    reaction = vs_nifty(i - 1, i + 1)
+    low, high = REACTION_CUTOFFS
+    group = "strong_negative" if reaction < low else "strong_positive" if reaction > high else "neutral"
+    return {
+        "results_date": str(days[i].date()),
+        "trading_days_since": int(days_since),
+        "days_remaining": int(RESULTS_DRIFT_DAYS - days_since),
+        "reaction_vs_nifty_pct": round(float(reaction) * 100, 2),
+        "group": group,
+        "since_reaction_vs_nifty_pct": round(float(vs_nifty(i + 1, len(close) - 1)) * 100, 2),
+        "historical": RESULTS_DRIFT_HISTORY,
+    }
+
 # In-memory cache for analyze_stock results (5-minute TTL)
 _analysis_cache = {}
 _ANALYSIS_CACHE_TTL = 300  # seconds
@@ -1214,9 +1280,12 @@ async def analyze_stock(
         df_task = fetch_history()
         info_task = fetch_info()
         news_task = fetch_stock_news(symbol)
+        results_task = fetch_results_inputs(symbol)
         
         # Wait for all
-        df, info, news_data = await asyncio.gather(df_task, info_task, news_task)
+        df, info, news_data, (results_date, nifty_close) = await asyncio.gather(
+            df_task, info_task, news_task, results_task
+        )
         if not info.get('longName'):
             # Ticker.info often lacks names on the Space; the news fetch already looked it up (cached)
             info = {**info, 'longName': await _company_name(symbol) or symbol}
@@ -1228,6 +1297,7 @@ async def analyze_stock(
         response_data_raw = await asyncio.to_thread(
             _build_analysis, symbol, df, info, news_data, account_size, risk_per_trade
         )
+        response_data_raw["results_drift"] = results_drift(df['Close'], nifty_close, results_date)
         
         response_data = convert_to_python_type(response_data_raw)
 

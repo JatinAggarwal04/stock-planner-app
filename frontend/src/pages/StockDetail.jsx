@@ -9,6 +9,7 @@ import StockHeader from '../components/stock-detail/StockHeader'
 import ChartView from '../components/stock-detail/ChartView'
 import TechnicalIndicators from '../components/stock-detail/TechnicalIndicators'
 import SupportResistance from '../components/stock-detail/SupportResistance'
+import ResultsDrift from '../components/stock-detail/ResultsDrift'
 import NewsPanel from '../components/stock-detail/NewsPanel'
 import TradePanel from '../components/stock-detail/TradePanel'
 import ChatInterface from '../components/chatbot/ChatInterface'
@@ -153,6 +154,7 @@ export default function StockDetail() {
             />
             <TechnicalIndicators data={analysis} />
             <SupportResistance data={analysis.support_resistance} />
+            <ResultsDrift data={analysis.results_drift} />
           </div>
 
           {/* Right Column - Trade Panel & News */}
