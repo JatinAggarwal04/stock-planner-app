@@ -238,6 +238,7 @@ export default function ChatInterface({ onClose, context = 'general' }) {
             {context.type === 'stock' && (
               <StockContextChip
                 symbol={context.symbol}
+                position={context}
                 show={showContext}
                 onToggle={handleContextToggle}
               />

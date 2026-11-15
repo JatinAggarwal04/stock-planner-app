@@ -2,7 +2,7 @@
 import { X, TrendingUp } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
-export default function StockContextChip({ symbol, show, onToggle }) {
+export default function StockContextChip({ symbol, position, show, onToggle }) {
   return (
     <AnimatePresence>
       {show && (
@@ -16,6 +16,12 @@ export default function StockContextChip({ symbol, show, onToggle }) {
             <TrendingUp className="w-4 h-4 text-primary-600" />
             <span className="text-sm font-medium text-primary-700 dark:text-primary-400">
               Context: {symbol.replace('.NS', '')}
+              {position?.has_position && (
+                <span className="font-normal">
+                  {' '}· holding {Math.abs(position.quantity)} @ ₹{position.buy_price}
+                  {position.quantity < 0 && ' (short)'}
+                </span>
+              )}
             </span>
             <button
               onClick={onToggle}
