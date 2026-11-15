@@ -5,7 +5,7 @@ import pytest
 
 import main
 import ml_engine
-from tests.conftest import FakeTicker
+from tests.conftest import FakeTicker, auth_headers
 
 
 def test_root(client):
@@ -168,7 +168,7 @@ def test_push_model_needs_hf_token(client, admin_headers):
 
 # ---------- chat ----------
 
-def test_chat_is_rate_limited_per_ip(client, monkeypatch):
+def test_chat_is_rate_limited_per_user(client, monkeypatch):
     async def fake_chat(message, context=None):
         return "ok"
 
@@ -176,8 +176,12 @@ def test_chat_is_rate_limited_per_ip(client, monkeypatch):
     body = {"message": "hi"}
     codes = [client.post("/api/chat", json=body).status_code for _ in range(main.CHAT_RATE_LIMIT + 1)]
     assert codes[:-1] == [200] * main.CHAT_RATE_LIMIT and codes[-1] == 429
-    other_ip = client.post("/api/chat", json=body, headers={"X-Forwarded-For": "203.0.113.9"})
-    assert other_ip.status_code == 200
+
+    # Forging a different IP no longer helps; only a different account gets its own limit
+    spoofed = client.post("/api/chat", json=body, headers={"X-Forwarded-For": "203.0.113.9"})
+    assert spoofed.status_code == 429
+    other_user = client.post("/api/chat", json=body, headers=auth_headers(user_id="user-2"))
+    assert other_user.status_code == 200
 
 
 @pytest.mark.parametrize("message", ["", "x" * 2001])

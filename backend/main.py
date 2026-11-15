@@ -7,8 +7,9 @@ import yfinance as yf
 import feedparser
 import gc
 import math
+import jwt
 import threading
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Header, Request, Query
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from datetime import datetime
@@ -58,29 +59,58 @@ app.add_middleware(
 
 # Configuration
 ADMIN_KEY = os.getenv("ADMIN_KEY")
-CHAT_RATE_LIMIT = 10  # requests per window per IP
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+MAX_SESSION_SECONDS = 12 * 60 * 60  # users must sign in again after 12 hours
+CHAT_RATE_LIMIT = 10  # requests per window per user
 CHAT_RATE_WINDOW = 60  # seconds
-CHAT_RATE_MAX_CLIENTS = 10000  # sweep idle clients beyond this many tracked IPs
+CHAT_RATE_MAX_CLIENTS = 10000  # sweep idle users beyond this many tracked users
 _chat_requests = defaultdict(deque)
+
+# Supabase signs access tokens with asymmetric keys published at this JWKS endpoint (keys cached for an hour)
+_jwks_client = (
+    jwt.PyJWKClient(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json", cache_keys=True, lifespan=3600)
+    if SUPABASE_URL else None
+)
+
+def require_user(authorization: Optional[str] = Header(None)) -> Dict:
+    """Verify the caller's Supabase access token and enforce the 12-hour sign-in limit. Returns the token claims."""
+    if _jwks_client is None:
+        raise HTTPException(status_code=503, detail="Authentication is not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not signed in")
+    token = authorization[len("Bearer "):]
+    try:
+        signing_key = _jwks_client.get_signing_key_from_jwt(token)
+        claims = jwt.decode(token, signing_key.key, algorithms=["ES256", "RS256"], audience="authenticated")
+    except jwt.PyJWKClientConnectionError as e:
+        print(f"JWKS fetch error: {e}")
+        raise HTTPException(status_code=503, detail="Authentication is temporarily unavailable")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    
+    # amr records when the user actually authenticated; it doesn't change when the token is refreshed
+    signed_in_at = max(
+        (m.get("timestamp", 0) for m in claims.get("amr") or [] if isinstance(m, dict)),
+        default=0,
+    )
+    if time.time() - signed_in_at > MAX_SESSION_SECONDS:
+        raise HTTPException(status_code=401, detail="Session expired, please sign in again")
+    return claims
 
 def require_admin(x_admin_key: Optional[str] = Header(None)):
     """Reject admin calls unless X-Admin-Key matches ADMIN_KEY. Fails closed if ADMIN_KEY is unset."""
     if not ADMIN_KEY or not x_admin_key or not hmac.compare_digest(x_admin_key.encode(), ADMIN_KEY.encode()):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-def chat_rate_limit(request: Request):
-    """Simple in-memory sliding-window limit per client IP."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        ip = forwarded.split(",")[0].strip()
-    else:
-        ip = request.client.host if request.client else "unknown"
+def chat_rate_limit(claims: Dict = Depends(require_user)):
+    """Simple in-memory sliding-window limit per signed-in user (headers can't be forged to dodge it)."""
+    user_id = claims["sub"]
     now = time.time()
     if len(_chat_requests) > CHAT_RATE_MAX_CLIENTS:
-        # Drop idle clients so many distinct IPs can't grow memory without bound
+        # Drop idle users so the tracking dict can't grow without bound
         for key in [k for k, w in _chat_requests.items() if not w or now - w[-1] > CHAT_RATE_WINDOW]:
             del _chat_requests[key]
-    window = _chat_requests[ip]
+    window = _chat_requests[user_id]
     while window and now - window[0] > CHAT_RATE_WINDOW:
         window.popleft()
     if len(window) >= CHAT_RATE_LIMIT:
@@ -1050,7 +1080,7 @@ def _build_analysis(symbol: str, df: pd.DataFrame, info: Dict, news_data: Dict,
 _analysis_cache = {}
 _ANALYSIS_CACHE_TTL = 300  # seconds
 
-@app.get("/analyze/{symbol}")
+@app.get("/analyze/{symbol}", dependencies=[Depends(require_user)])
 async def analyze_stock(
     symbol: str,
     account_size: Annotated[float, Query(gt=0, allow_inf_nan=False)] = 100000,
@@ -1121,7 +1151,7 @@ async def analyze_stock(
             raise HTTPException(status_code=429, detail="Rate limited. Please try again in a few minutes.")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/analyze/{symbol}/personalized")
+@app.get("/analyze/{symbol}/personalized", dependencies=[Depends(require_user)])
 async def personalized_analysis(
     symbol: str,
     buy_price: Annotated[float, Query(gt=0, allow_inf_nan=False)],
@@ -1160,7 +1190,7 @@ async def personalized_analysis(
             raise HTTPException(status_code=429, detail="Rate limited. Please try again in a few minutes.")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/search")
+@app.get("/search", dependencies=[Depends(require_user)])
 def search_stocks(query: str):
     """Search for stocks using Yahoo Finance API"""
     try:
@@ -1207,7 +1237,7 @@ def search_stocks(query: str):
         # Return empty list instead of error for smooth UI
         return []
 
-@app.get("/history/{symbol}")
+@app.get("/history/{symbol}", dependencies=[Depends(require_user)])
 def get_stock_history(symbol: str, period: str = "1mo"):
     """
     Get historical price data and corporate actions.
@@ -1353,7 +1383,7 @@ def get_stock_history(symbol: str, period: str = "1mo"):
 _quote_cache = {}
 _QUOTE_CACHE_TTL = 30  # seconds
 
-@app.get("/quote/{symbol}")
+@app.get("/quote/{symbol}", dependencies=[Depends(require_user)])
 def quick_quote(symbol: str):
     """Quick price quote for watchlist"""
     

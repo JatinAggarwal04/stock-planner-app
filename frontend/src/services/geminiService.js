@@ -1,6 +1,8 @@
 //frontend/src/services/geminiService.js
 // import { v4 as uuidv4 } from 'uuid' // Removed to avoid dependency issue
 
+import { authHeaders, handleUnauthorized } from './api'
+
 // Use VITE_API_URL for consistency across the app
 const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -36,9 +38,15 @@ class GeminiService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(await authHeaders()),
         },
         body: JSON.stringify(payload),
       })
+
+      if (response.status === 401) {
+        handleUnauthorized()
+        return 'Your session has expired. Please sign in again.'
+      }
 
       if (response.status === 429) {
         return "You're sending messages too quickly. Please wait a minute and try again."

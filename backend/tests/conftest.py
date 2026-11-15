@@ -7,7 +7,10 @@ Tests never touch the network or the real models/ folder:
 """
 import os
 import tempfile
+import time
+from types import SimpleNamespace
 
+import jwt
 import numpy as np
 import pandas as pd
 import pytest
@@ -88,8 +91,49 @@ def isolate(monkeypatch):
     monkeypatch.setattr(main.requests, "get", blocked)
 
 
+# Supabase signs access tokens with an ES256 key; tests sign with their own key and serve it as the "JWKS"
+from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+
+SIGNING_KEY = ec.generate_private_key(ec.SECP256R1())
+
+
+class FakeJWKSClient:
+    def get_signing_key_from_jwt(self, token):
+        return SimpleNamespace(key=SIGNING_KEY.public_key())
+
+
+def make_token(user_id="user-1", signed_in_ago=60, expires_in=3600, key=None, **claims):
+    """A Supabase-style access token for a user who signed in `signed_in_ago` seconds ago."""
+    now = int(time.time())
+    payload = {
+        "sub": user_id,
+        "aud": "authenticated",
+        "role": "authenticated",
+        "iat": now,
+        "exp": now + expires_in,
+        "amr": [{"method": "password", "timestamp": now - signed_in_ago}],
+        **claims,
+    }
+    return jwt.encode(payload, key or SIGNING_KEY, algorithm="ES256")
+
+
+def auth_headers(**kwargs):
+    return {"Authorization": f"Bearer {make_token(**kwargs)}"}
+
+
+@pytest.fixture(autouse=True)
+def fake_jwks(monkeypatch):
+    monkeypatch.setattr(main, "_jwks_client", FakeJWKSClient())
+
+
 @pytest.fixture
 def client():
+    """Client signed in as user-1."""
+    return TestClient(main.app, headers=auth_headers())
+
+
+@pytest.fixture
+def anon_client():
     return TestClient(main.app)
 
 
