@@ -156,6 +156,16 @@ export default function StockHeader({ data, priceChange, timeRange }) {
               {signal.replace('_', ' ')}
             </div>
 
+            {/* Track record disclosure: the signal is shown, but not as a prediction */}
+            {data.recommendation.track_record && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 -mt-2 mb-4">
+                Track record ({data.recommendation.track_record.period}, next{' '}
+                {data.recommendation.track_record.horizon_days} days): stocks beat the Nifty after{' '}
+                {data.recommendation.track_record.beat_nifty_pct.BUY}% of BUY signals and{' '}
+                {data.recommendation.track_record.beat_nifty_pct.SELL}% of SELL signals. Not predictive.
+              </p>
+            )}
+
             {/* Confidence Bar */}
             <div className="mb-6">
               <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 mb-2 font-medium">

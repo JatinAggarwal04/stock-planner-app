@@ -392,6 +392,16 @@ ml_engine = MLEngine()
 # On pure random data the backtest reaches up to ~0.54 by chance, so anything below 0.55 is not a proven edge.
 MIN_ML_AUC = 0.55
 
+# How the BUY/HOLD/SELL signal has actually done (scripts/signal_backtest.py: trend component with neutral
+# sentiment, Nifty 50, 2016-2026, 127,995 stock-days). No predictive value: SELL days did slightly better.
+SIGNAL_TRACK_RECORD = {
+    "horizon_days": 60,
+    "period": "2016-2026",
+    "beat_nifty_pct": {"BUY": 52.9, "HOLD": 50.2, "SELL": 53.5},
+    "rose_pct": {"BUY": 61.2, "HOLD": 60.9, "SELL": 65.2},
+    "predictive": False,
+}
+
 def ml_has_edge(backtest: Optional[Dict]) -> bool:
     return bool(backtest) and (backtest.get("auc") or 0) >= MIN_ML_AUC
 _training_lock = threading.Lock()
@@ -1098,6 +1108,7 @@ def _build_analysis(symbol: str, df: pd.DataFrame, info: Dict, news_data: Dict,
         "recommendation": {
             "signal": final_signal,
             "confidence_score": round(final_score, 1),
+            "track_record": SIGNAL_TRACK_RECORD,
             "risk_rating": "Low" if risk_metrics['volatility_annual'] < 20 else "Medium" if risk_metrics['volatility_annual'] < 35 else "High",
             "summary": (
                 f"Hybrid signal based on {f'ML ({st_signal}), ' if ml_weight else ''}"

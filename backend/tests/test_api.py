@@ -66,6 +66,12 @@ def test_analysis_ignores_model_without_edge(client, trained_model, monkeypatch)
     assert not data["recommendation"]["summary"].startswith("Hybrid signal based on ML")
 
 
+def test_signal_carries_its_track_record(client):
+    record = client.get("/analyze/RECORD.NS").json()["recommendation"]["track_record"]
+    assert record["predictive"] is False
+    assert record["beat_nifty_pct"] == {"BUY": 52.9, "HOLD": 50.2, "SELL": 53.5}
+
+
 def test_personalized_does_not_leak_into_shared_cache(client):
     response = client.get("/analyze/TEST.NS/personalized", params={"buy_price": 100, "quantity": 10})
     assert response.status_code == 200
