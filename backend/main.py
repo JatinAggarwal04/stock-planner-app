@@ -663,32 +663,28 @@ class TradingPlanGenerator:
 
     @staticmethod
     def calculate_long_term_targets(current_price: float, volatility_annual: float, df: pd.DataFrame = None) -> Dict:
-        """Calculate statistical targets and Monthly Pivots for long term holding (months)
+        """Likely price ranges and Monthly Pivots for long term holding (months)
         
-        Zerodha uses monthly HLC for daily timeframe pivots.
+        Ranges are ±1 standard deviation of returns (log-normal), which covers roughly two in three outcomes if
+        volatility stays similar. They're shown as ranges, not upside targets: the price is about as likely to
+        finish near the low end as the high end. Zerodha uses monthly HLC for daily timeframe pivots.
         """
-        # Statistical projection based on Normal Distribution (1 Standard Deviation)
-        # Target = Current * (1 + (Vol * sqrt(time)))
-        
-        # 3 Months (0.25 year)
-        target_3m_up = current_price * (1 + (volatility_annual/100 * np.sqrt(0.25)))
-        target_3m_down = current_price * (1 - (volatility_annual/100 * np.sqrt(0.25)))
-        
-        # 6 Months (0.5 year)
-        target_6m_up = current_price * (1 + (volatility_annual/100 * np.sqrt(0.50)))
-        
-        # 12 Months (1 year)
-        target_1y_up = current_price * (1 + (volatility_annual/100))
+        def likely_range(years: float) -> Dict:
+            spread = volatility_annual / 100 * np.sqrt(years)
+            return {"low": round(current_price * np.exp(-spread), 2), "high": round(current_price * np.exp(spread), 2)}
         
         result = {
             "strategy": "Long Term Investment (Monthly Pivots)",
-            "statistical_targets": {
-                "3_month_upside": round(target_3m_up, 2),
-                "3_month_downside": round(target_3m_down, 2),
-                "6_month_upside": round(target_6m_up, 2),
-                "1_year_upside": round(target_1y_up, 2)
+            "likely_ranges": {
+                "1_month": likely_range(1 / 12),
+                "3_months": likely_range(0.25),
+                "6_months": likely_range(0.5),
+                "1_year": likely_range(1.0),
             },
-            "note": "Targets based on 1-SD historical volatility probability."
+            "note": (
+                "Each range covers roughly two in three outcomes if volatility stays similar. The price is about as "
+                "likely to end near the low end as the high end, so these are not price targets or forecasts."
+            )
         }
         
         # Monthly Pivot Calculation (if df is provided)

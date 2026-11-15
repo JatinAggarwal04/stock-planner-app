@@ -160,3 +160,17 @@ def test_model_save_is_atomic_and_reloadable(trained_model, tmp_path, monkeypatc
 
     reloaded = ml_engine.MLEngine()
     assert reloaded.xgb_model is not None
+
+
+def test_long_term_levels_are_symmetric_ranges():
+    plan = main.TradingPlanGenerator.calculate_long_term_targets(100.0, volatility_annual=30.0)
+    ranges = plan["likely_ranges"]
+    assert list(ranges) == ["1_month", "3_months", "6_months", "1_year"]
+    for r in ranges.values():
+        assert r["low"] < 100 < r["high"]
+        assert abs(r["low"] * r["high"] - 100 ** 2) < 0.5  # symmetric in log terms: equally likely either side
+    assert ranges["1_year"] == {"low": round(100 * np.exp(-0.3), 2), "high": round(100 * np.exp(0.3), 2)}
+    widths = [r["high"] - r["low"] for r in ranges.values()]
+    assert widths == sorted(widths)  # longer horizon, wider range
+    assert "not price targets" in plan["note"]
+    assert "statistical_targets" not in plan

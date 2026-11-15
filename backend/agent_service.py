@@ -64,7 +64,7 @@ class TradeWiseAgent:
                 "type": "function",
                 "function": {
                     "name": "get_trading_plan",
-                    "description": "Get the quantitative trading plan including Intraday Pivots, Swing Targets, and Long Term forecasts.",
+                    "description": "Get the quantitative trading plan including Intraday Pivots, Swing Targets, and likely long-term price ranges.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -126,6 +126,8 @@ class TradeWiseAgent:
         - ALWAYS use `get_technical_analysis` or `get_trading_plan` for analysis.
         - ALWAYS use `search_knowledge_base` for questions about terms like "CPR", "Impact Score", "Swing Targets".
         - RISK: If stops are deep (>7%), recommend 'Capital Protection Rule'.
+        - RANGES: Long-term levels are likely ranges (low to high), not targets. Always quote both ends and never
+          present the high end alone as an "upside" or expected price.
         - POSITION: If Context Data shows Position: YES, the user already holds the stock. Base hold/exit/target
           advice on their average price, quantity and current profit or loss, not on a fresh entry.
         - Do NOT hallucinate data.
