@@ -115,6 +115,56 @@ def test_chat_runs_tool_and_returns_final_answer(monkeypatch):
     assert any("Active Stock: TCS.NS" in m["content"] for m in requests[0]["messages"] if isinstance(m, dict))
 
 
+class ScriptedCompletions:
+    """Returns the scripted tool calls one round at a time, then a final answer."""
+
+    def __init__(self, rounds):
+        self.rounds = list(rounds)
+        self.requests = []
+
+    async def create(self, **kwargs):
+        self.requests.append(kwargs)
+        if self.rounds:
+            calls = [NS(id=f"call-{len(self.requests)}-{i}", function=NS(name=name, arguments=args))
+                     for i, (name, args) in enumerate(self.rounds.pop(0))]
+            return NS(choices=[NS(message=NS(tool_calls=calls, content=None))])
+        return NS(choices=[NS(message=NS(tool_calls=None, content="final answer"))])
+
+
+def test_chat_chains_tools_across_rounds(monkeypatch):
+    # The live failure: after one tool, the model wanted another and tools were no longer offered
+    completions = ScriptedCompletions([
+        [("get_trading_plan", '{"symbol": "IDEA.NS"}')],
+        [("get_technical_analysis", '{"symbol": "IDEA.NS"}'), ("get_news_analysis", '{"symbol": "IDEA.NS"}')],
+    ])
+    monkeypatch.setattr(agent, "client", NS(chat=NS(completions=completions)))
+
+    assert asyncio.run(agent.chat("What does the current analysis suggest?", {"symbol": "IDEA.NS"})) == "final answer"
+    assert len(completions.requests) == 3
+    assert all(r["tools"] == agent.tools_schema and r["tool_choice"] == "auto" for r in completions.requests)
+    final_messages = completions.requests[-1]["messages"]
+    answered = {m["tool_call_id"] for m in final_messages if isinstance(m, dict) and m.get("role") == "tool"}
+    requested = {c["id"] for m in final_messages if isinstance(m, dict) and m.get("role") == "assistant"
+                 for c in m["tool_calls"]}
+    assert answered == requested and len(answered) == 3
+
+
+def test_unknown_tool_still_gets_a_response(monkeypatch):
+    completions = ScriptedCompletions([[("functions.get_price", '{"symbol": "TCS.NS"}')]])
+    monkeypatch.setattr(agent, "client", NS(chat=NS(completions=completions)))
+    assert asyncio.run(agent.chat("price?")) == "final answer"
+    assert "Unknown tool" in completions.requests[1]["messages"][-1]["content"]
+
+
+def test_chat_stops_at_tool_round_limit(monkeypatch):
+    from agent_service import MAX_TOOL_ROUNDS
+    completions = ScriptedCompletions([[("get_stock_price", '{"symbol": "TCS.NS"}')]] * (MAX_TOOL_ROUNDS + 3))
+    monkeypatch.setattr(agent, "client", NS(chat=NS(completions=completions)))
+    answer = asyncio.run(agent.chat("loop forever"))
+    assert len(completions.requests) == MAX_TOOL_ROUNDS
+    assert "couldn't complete" in answer
+
+
 def test_chat_survives_bad_tool_arguments(monkeypatch):
     answer, requests = run_chat(monkeypatch, "get_stock_price", '{"ticker": "TCS.NS"}')
     assert answer == "final answer"

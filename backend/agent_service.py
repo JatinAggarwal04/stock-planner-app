@@ -19,6 +19,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     logger.warning("GROQ_API_KEY not found in environment variables!")
 
+MAX_TOOL_ROUNDS = 5  # model calls per chat message; each may run several tools
+
 class TradeWiseAgent:
     def __init__(self):
         # Without a key the rest of the API still runs; chat just reports it's unavailable
@@ -249,22 +251,24 @@ class TradeWiseAgent:
         messages.append({"role": "user", "content": message})
         
         try:
-            # 1. Initial Call
-            completion = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                tools=self.tools_schema,
-                tool_choice="auto",
-                max_tokens=1024
-            )
-            
-            response_message = completion.choices[0].message
-            tool_calls = response_message.tool_calls
-            
-            # 2. Handle Tool Calls
-            if tool_calls:
+            # Agent loop: tools stay available on every call, so the model can chain tools
+            # (e.g. trading plan, then technical analysis) until it gives a final answer
+            for _ in range(MAX_TOOL_ROUNDS):
+                completion = await self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    tools=self.tools_schema,
+                    tool_choice="auto",
+                    max_tokens=2048
+                )
+                
+                response_message = completion.choices[0].message
+                tool_calls = response_message.tool_calls
+                if not tool_calls:
+                    return response_message.content
+                
                 # Send back only the fields Groq accepts on input; the response object also carries
-                # output-only fields (reasoning, annotations, executed_tools) that make the follow-up call fail
+                # output-only fields (reasoning, annotations, executed_tools) that make the next call fail
                 messages.append({
                     "role": "assistant",
                     "content": response_message.content or "",
@@ -278,36 +282,32 @@ class TradeWiseAgent:
                     ],
                 })
                 
+                # Every tool call must get a tool message back, even when it fails
                 for tool_call in tool_calls:
                     function_name = tool_call.function.name
                     function_to_call = self.available_tools.get(function_name)
-                    function_args = json.loads(tool_call.function.arguments)
                     
-                    logger.info(f"Invoking Tool: {function_name} with {function_args}")
-                    
-                    if function_to_call:
-                        try:
+                    try:
+                        function_args = json.loads(tool_call.function.arguments or "{}")
+                        logger.info(f"Invoking Tool: {function_name} with {function_args}")
+                        if function_to_call is None:
+                            function_response = json.dumps({"error": f"Unknown tool: {function_name}"})
+                        else:
                             function_response = await function_to_call(**function_args)
-                        except TypeError as e:  # Model sent unexpected arguments
-                            function_response = json.dumps({"error": str(e)})
-                        
-                        messages.append(
-                            {
-                                "tool_call_id": tool_call.id,
-                                "role": "tool",
-                                "name": function_name,
-                                "content": str(function_response),
-                            }
-                        )
-                
-                # 3. Final Response with Tool Outputs
-                second_response = await self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages
-                )
-                return second_response.choices[0].message.content
+                    except (TypeError, ValueError) as e:  # Bad JSON or unexpected arguments from the model
+                        function_response = json.dumps({"error": str(e)})
+                    
+                    messages.append(
+                        {
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": str(function_response),
+                        }
+                    )
             
-            return response_message.content
+            logger.error("Agent stopped after reaching the tool-call limit")
+            return "Sorry, I couldn't complete that analysis. Please try rephrasing your question."
 
         except Exception as e:
             logger.error(f"Groq Chat Error: {e}")
