@@ -23,7 +23,7 @@ from collections import defaultdict, deque
 from async_lru import alru_cache
 from scipy.signal import argrelextrema
 from advanced_analytics import calculate_pressure_index, calculate_breakout_probability
-from ml_engine import MLEngine, TOP_NIFTY_STOCKS
+from ml_engine import MLEngine, TOP_NIFTY_STOCKS, walk_forward_backtest
 warnings.filterwarnings('ignore')
 
 # Technical Analysis
@@ -373,7 +373,8 @@ class FeatureEngine:
     @staticmethod
     def create_targets(data: pd.DataFrame) -> pd.DataFrame:
         data['Return_1d'] = data['Close'].pct_change(1).shift(-1)
-        data['Target_Moderate'] = (data['Return_1d'] > 0.002).astype(int)
+        # The last day has no next-day return yet: leave its target NaN (it was silently labelled 0)
+        data['Target_Moderate'] = (data['Return_1d'] > 0.002).astype(float).where(data['Return_1d'].notna())
         return data
 
 # ==================== ML ENGINE (Refactored to ml_engine.py) ====================
@@ -406,7 +407,7 @@ def train_universal_model_job():
             try:
                 print(f"Fetching {symbol}...")
                 ticker = yf.Ticker(symbol)
-                df = ticker.history(period="2y")
+                df = ticker.history(period="5y")  # longer history for training and the backtest
                 if len(df) < 200: continue
                 
                 # Apply same feature engineering pipeline
@@ -424,6 +425,11 @@ def train_universal_model_job():
         if all_X:
             combined_X = pd.concat(all_X)
             combined_y = pd.concat(all_y)
+            try:
+                new_engine.backtest = walk_forward_backtest(combined_X, combined_y, combined_X.index)
+                print(f"Walk-forward backtest: {new_engine.backtest}")
+            except Exception as e:
+                print(f"Backtest skipped: {e}")
             new_engine.train_model(combined_X, combined_y, cols)
             ml_engine = new_engine
             print("Universal Model Trained & Saved.")
@@ -1099,7 +1105,8 @@ def _build_analysis(symbol: str, df: pd.DataFrame, info: Dict, news_data: Dict,
         
         "ml_analysis": {
             "model_accuracy": ml_stats['ensemble_accuracy'] if ml_stats else 0,
-            "top_features": ml_stats['top_features'] if ml_stats else []
+            "top_features": ml_stats['top_features'] if ml_stats else [],
+            "backtest": getattr(ml_engine, "backtest", None)  # out-of-sample walk-forward results
         },
 
         "technical_analysis": { # Legacy structure
@@ -1527,6 +1534,16 @@ def train_universal_model(background_tasks: BackgroundTasks):
         raise HTTPException(status_code=409, detail="Training already in progress")
     background_tasks.add_task(train_universal_model_job)
     return {"status": "Training started in background"}
+
+@app.get("/admin/model-report", dependencies=[Depends(require_admin)])
+def model_report():
+    """Walk-forward backtest of the current model (recomputed on every training run)."""
+    return {
+        "trained": ml_engine.xgb_model is not None,
+        "training_in_progress": _training_lock.locked(),
+        "backtest": ml_engine.backtest,
+        "top_features": sorted(ml_engine.feature_importance.items(), key=lambda x: x[1], reverse=True)[:5],
+    }
 
 @app.post("/admin/push-model", dependencies=[Depends(require_admin)])
 def push_model_to_hub(repo_id: str):
