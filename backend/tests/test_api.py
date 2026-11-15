@@ -20,7 +20,8 @@ def test_analyze_while_model_is_training(client, untrained_model):
     assert data["recommendation"]["views"]["short_term"]["indicators"]["ml_score"] == 50.0
 
 
-def test_analyze_with_trained_model(client, trained_model):
+def test_analyze_with_trained_model(client, trained_model, monkeypatch):
+    monkeypatch.setattr(trained_model, "backtest", {"auc": 0.6})  # model with a proven edge
     model_path = os.path.join(ml_engine.MODEL_DIR, ml_engine.UNIVERSAL_MODEL_FILENAME)
     modified = os.path.getmtime(model_path)
 
@@ -46,6 +47,23 @@ def test_analysis_uses_search_name_when_yahoo_info_has_none(client, monkeypatch)
     monkeypatch.setattr(FakeTicker, "info", property(lambda self: {"marketCap": 1}))
     monkeypatch.setattr(main, "_company_name", name)
     assert client.get("/analyze/NAMED.NS").json()["company_name"] == "Test Industries Limited"
+
+
+@pytest.mark.parametrize("auc, ml_counts", [(None, False), (0.52, False), (0.549, False), (0.55, True), (0.6, True)])
+def test_ml_only_counts_with_proven_edge(auc, ml_counts):
+    assert main.ml_has_edge({"auc": auc} if auc is not None else None) is ml_counts
+
+
+def test_analysis_ignores_model_without_edge(client, trained_model, monkeypatch):
+    monkeypatch.setattr(trained_model, "backtest", {"auc": 0.516})
+    monkeypatch.setattr(trained_model, "predict", lambda *a, **k: {"ensemble_probability": 95.0})
+    data = client.get("/analyze/EDGE.NS").json()
+    short_term = data["recommendation"]["views"]["short_term"]
+    assert short_term["indicators"]["ml_score"] == 50.0  # the 95% call is not passed through
+    assert short_term["signal"] == "Neutral"
+    assert "no proven edge" in short_term["reasons"][0]
+    assert data["ml_analysis"]["model_accuracy"] == "No proven edge"
+    assert not data["recommendation"]["summary"].startswith("Hybrid signal based on ML")
 
 
 def test_personalized_does_not_leak_into_shared_cache(client):

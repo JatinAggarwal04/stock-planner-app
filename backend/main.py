@@ -387,6 +387,13 @@ FEATURE_COLS = [
 
 # Loaded once and shared by all requests; replaced wholesale when training finishes
 ml_engine = MLEngine()
+
+# The ML model only influences signals once its walk-forward AUC clears this bar.
+# On pure random data the backtest reaches up to ~0.54 by chance, so anything below 0.55 is not a proven edge.
+MIN_ML_AUC = 0.55
+
+def ml_has_edge(backtest: Optional[Dict]) -> bool:
+    return bool(backtest) and (backtest.get("auc") or 0) >= MIN_ML_AUC
 _training_lock = threading.Lock()
 
 def train_universal_model_job():
@@ -988,17 +995,25 @@ def _build_analysis(symbol: str, df: pd.DataFrame, info: Dict, news_data: Dict,
     latest_features = df.iloc[[-1]]
     ml_predictions = ml_engine.predict(latest_features, FEATURE_COLS)
     
-    if ml_predictions:
-        ml_prob = ml_predictions['ensemble_probability']
-        ml_stats = {"ensemble_accuracy": "Universal Model", "top_features": []}
-    else:
+    ml_weight = 0.0
+    if not ml_predictions:
         # Model is still training (fresh deploy): stay neutral until it's ready
         ml_prob = 50.0
         ml_stats = {"ensemble_accuracy": "Model training", "top_features": []}
+        st_reasons = ["AI model is training"]
+    elif not ml_has_edge(ml_engine.backtest):
+        # No proven out-of-sample edge: don't present a coin flip as a prediction
+        ml_prob = 50.0
+        ml_stats = {"ensemble_accuracy": "No proven edge", "top_features": []}
+        st_reasons = ["AI model paused: no proven edge in backtesting"]
+    else:
+        ml_prob = ml_predictions['ensemble_probability']
+        ml_stats = {"ensemble_accuracy": "Universal Model", "top_features": []}
+        st_reasons = ["AI Model Prediction"]
+        ml_weight = 0.5
 
     st_signal = "Bullish" if ml_prob > 60 else "Bearish" if ml_prob < 40 else "Neutral"
     st_confidence = ml_prob if st_signal == "Bullish" else (100 - ml_prob) if st_signal == "Bearish" else 50
-    st_reasons = ["AI Model Prediction"] + [f"{k}: {v:.2f}" for k, v in ml_stats.get('top_features', [])]
 
     # 2. Rule Based Analysis (Long Term)
     tech_analyzer = TechnicalAnalyzer()
@@ -1026,8 +1041,9 @@ def _build_analysis(symbol: str, df: pd.DataFrame, info: Dict, news_data: Dict,
     # Normalize Long Term
     lt_prob = lt_view['confidence'] if lt_view['signal'] == 'Bullish' else (100 - lt_view['confidence']) if lt_view['signal'] == 'Bearish' else 50
     
-    # WEIGHTED FORMULA: ML (50%) + Trend (30%) + Sentiment (20%)
-    final_score = (ml_prob * 0.5) + (lt_prob * 0.3) + (sent_prob * 0.2)
+    # WEIGHTED FORMULA: ML (50%) + Trend (30%) + Sentiment (20%) when the model has a proven edge,
+    # otherwise Trend (60%) + Sentiment (40%)
+    final_score = (ml_prob * ml_weight + lt_prob * 0.3 + sent_prob * 0.2) / (ml_weight + 0.5)
     final_signal = "BUY" if final_score > 60 else "SELL" if final_score < 40 else "HOLD"
     
     # Update Short Term confidence with sentiment influence
@@ -1087,7 +1103,10 @@ def _build_analysis(symbol: str, df: pd.DataFrame, info: Dict, news_data: Dict,
             "signal": final_signal,
             "confidence_score": round(final_score, 1),
             "risk_rating": "Low" if risk_metrics['volatility_annual'] < 20 else "Medium" if risk_metrics['volatility_annual'] < 35 else "High",
-            "summary": f"Hybrid signal based on ML ({st_signal}), Trend ({lt_view['signal']}), and Sentiment ({sentiment['sentiment']}).",
+            "summary": (
+                f"Hybrid signal based on {f'ML ({st_signal}), ' if ml_weight else ''}"
+                f"Trend ({lt_view['signal']}), and Sentiment ({sentiment['sentiment']})."
+            ),
             "views": {
                 "short_term": {
                     "signal": st_signal,
